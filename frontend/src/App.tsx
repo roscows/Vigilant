@@ -1,129 +1,97 @@
-﻿import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
 import { amlApi } from './api/amlApi';
 import { AlertsPanel } from './components/AlertsPanel';
 import { AmlGraphViewer } from './components/AmlGraphViewer';
-import { MetricCard } from './components/MetricCard';
-import { useGraphData } from './hooks/useGraphData';
 import { startAlertsHub, stopAlertsHub } from './realtime/alertsHub';
 import { useAlertsStore } from './store/alertsStore';
-
-const defaultIban = 'RS35105008123123123173';
+import { useGraphStore } from './store/graphStore';
 
 export default function App() {
-  const [accountIban, setAccountIban] = useState(defaultIban);
-  const [isSeeding, setIsSeeding] = useState(false);
-  const [seedMessage, setSeedMessage] = useState<string | null>(null);
-  const { forceGraphData, isLoading, error, refresh } = useGraphData(accountIban, 5);
-  const { alerts, isRealtimeConnected, prependAlerts, setAlerts, setRealtimeConnected } = useAlertsStore();
+  const alerts = useAlertsStore((state) => state.alerts);
+  const selectedAlertId = useAlertsStore((state) => state.selectedAlertId);
+  const setAlerts = useAlertsStore((state) => state.setAlerts);
+  const addAlert = useAlertsStore((state) => state.addAlert);
+  const setAlertsLoading = useAlertsStore((state) => state.setLoading);
+  const setRealtimeConnected = useAlertsStore((state) => state.setRealtimeConnected);
+  const setGraph = useGraphStore((state) => state.setGraph);
+  const setGraphLoading = useGraphStore((state) => state.setLoading);
+  const highlightAlert = useGraphStore((state) => state.highlightAlert);
+
+  const selectedAlert = useMemo(
+    () => alerts.find((alert) => alert.id === selectedAlertId),
+    [alerts, selectedAlertId],
+  );
+
+  const loadGraphOverview = useCallback(async (signal?: AbortSignal) => {
+    setGraphLoading(true);
+    useAlertsStore.getState().selectAlert(null);
+    highlightAlert(null);
+
+    try {
+      const graph = await amlApi.getGraphOverview(250, signal);
+      setGraph(graph);
+    } catch {
+      setGraph({ nodes: [], edges: [] });
+    }
+  }, [highlightAlert, setGraph, setGraphLoading]);
+
+  const searchAccountIban = useCallback(async (iban: string) => {
+    setGraphLoading(true);
+    useAlertsStore.getState().selectAlert(null);
+    highlightAlert(null);
+
+    try {
+      const graph = await amlApi.getEntityGraph(iban, 6);
+      setGraph(graph);
+    } catch {
+      setGraph({ nodes: [], edges: [] });
+    }
+  }, [highlightAlert, setGraph, setGraphLoading]);
 
   useEffect(() => {
-    let isMounted = true;
+    const abortController = new AbortController();
+    setAlertsLoading(true);
 
-    amlApi.getAlerts({ maxTransfers: 4, lookbackHours: 24, limit: 10 })
-      .then((data) => {
-        if (isMounted) {
-          setAlerts(data);
-        }
-      })
-      .catch(() => undefined);
+    amlApi.getAlerts({ maxTransfers: 8, lookbackHours: 24 * 7, limit: 250 }, abortController.signal)
+      .then((data) => setAlerts(data))
+      .catch(() => setAlerts([]));
 
-    startAlertsHub((incomingAlerts) => prependAlerts(incomingAlerts))
-      .then(() => setRealtimeConnected(true))
-      .catch(() => setRealtimeConnected(false));
+    void loadGraphOverview(abortController.signal);
+
+    startAlertsHub({
+      onAlert: addAlert,
+      onConnectionChange: setRealtimeConnected,
+    }).catch(() => setRealtimeConnected(false));
 
     return () => {
-      isMounted = false;
+      abortController.abort();
       setRealtimeConnected(false);
       void stopAlertsHub();
     };
-  }, [prependAlerts, setAlerts, setRealtimeConnected]);
+  }, [addAlert, loadGraphOverview, setAlerts, setAlertsLoading, setRealtimeConnected]);
 
-  const seedDemoGraph = async () => {
-    setIsSeeding(true);
-    setSeedMessage(null);
-
-    try {
-      const result = await amlApi.seedTransactions({
-        clientCount: 20,
-        accountCount: 34,
-        randomTransactionCount: 72,
-        circularFlowCount: 3,
-      });
-
-      setAccountIban(result.focusAccountIban);
-      setAlerts(result.triggeredAlerts);
-      setSeedMessage(
-        `Seeded ${result.transactionsCreated} transactions and ${result.circularFlowsCreated} circular flows. Focus moved to ${result.focusAccountIban}.`,
-      );
-    } catch (error) {
-      setSeedMessage(error instanceof Error ? error.message : 'Unable to seed demo graph.');
-    } finally {
-      setIsSeeding(false);
+  useEffect(() => {
+    if (!selectedAlert?.accountIban) {
+      return;
     }
-  };
+
+    const abortController = new AbortController();
+    setGraphLoading(true);
+
+    amlApi.getEntityGraph(selectedAlert.accountIban, 6, abortController.signal)
+      .then((graph) => {
+        setGraph(graph);
+        highlightAlert(selectedAlert.id);
+      })
+      .catch(() => setGraph({ nodes: [], edges: [] }));
+
+    return () => abortController.abort();
+  }, [highlightAlert, selectedAlert, setGraph, setGraphLoading]);
 
   return (
-    <main className="dashboard-shell">
-      <header className="app-topbar glass-panel">
-        <div className="brand-lockup" aria-label="Vigilant application brand">
-          <span className="brand-mark">V</span>
-          <div>
-            <strong>Vigilant</strong>
-            <small>AML Graph Intelligence</small>
-          </div>
-        </div>
-        <span className="brand-tagline">Graph-powered financial crime detection</span>
-      </header>
-
-      <section className="hero-panel glass-panel">
-        <div>
-          <p className="eyebrow">Vigilant AML Platform</p>
-          <h1>Vigilant follows suspicious money until the pattern gives itself away.</h1>
-          <p className="hero-copy">
-            Vigilant generates realistic Neo4j AML graphs, visualizes entity relationships, and streams circular-flow alerts in real time.
-          </p>
-          <div className="hero-actions">
-            <button onClick={() => void seedDemoGraph()} disabled={isSeeding}>
-              {isSeeding ? 'Seeding graph...' : 'Seed Demo Graph'}
-            </button>
-            <button className="ghost-button" onClick={() => void refresh()}>
-              Refresh Current Graph
-            </button>
-          </div>
-          {seedMessage ? <p className="seed-message">{seedMessage}</p> : null}
-        </div>
-        <div className="status-card">
-          <span className={isRealtimeConnected ? 'pulse online' : 'pulse'} />
-          <span>{isRealtimeConnected ? 'Realtime alerts online' : 'Realtime alerts connecting'}</span>
-        </div>
-      </section>
-
-      <section className="control-grid">
-        <article className="glass-panel search-card">
-          <label htmlFor="iban">Account IBAN</label>
-          <div className="search-row">
-            <input
-              id="iban"
-              value={accountIban}
-              onChange={(event) => setAccountIban(event.target.value)}
-              placeholder="Enter account IBAN"
-            />
-            <button onClick={() => void refresh()}>Load Graph</button>
-          </div>
-        </article>
-
-        <MetricCard label="Nodes" value={forceGraphData.nodes.length} tone="blue" />
-        <MetricCard label="Edges" value={forceGraphData.links.length} tone="mint" />
-        <MetricCard label="Alerts" value={alerts.length} tone="coral" />
-      </section>
-
-      <section className="content-grid">
-        <AmlGraphViewer data={forceGraphData} isLoading={isLoading || isSeeding} error={error} />
-        <AlertsPanel alerts={alerts} />
-      </section>
+    <main className="analyst-dashboard">
+      <AlertsPanel />
+      <AmlGraphViewer onLoadOverview={loadGraphOverview} onSearchIban={searchAccountIban} />
     </main>
   );
 }
-
-
-

@@ -1,45 +1,125 @@
-﻿import type { AmlAlert } from '../api/types';
+﻿import type { AlertSeverity, AlertSeverityFilter, AmlAlert } from '../api/types';
+import { useAlertsStore } from '../store/alertsStore';
+import { useGraphStore } from '../store/graphStore';
 
-interface AlertsPanelProps {
-  alerts: AmlAlert[];
-}
+const filters: AlertSeverityFilter[] = ['All', 'Critical', 'High', 'Medium'];
 
-export function AlertsPanel({ alerts }: AlertsPanelProps) {
+const alertTypeLabels: Record<string, string> = {
+  CircularFlow: 'Circular Flow',
+  Smurfing: 'Smurfing / Structuring',
+  RapidFanOut: 'Rapid Fan-Out',
+  SharedDeviceOrIp: 'Shared Device or IP',
+  RoundTrip: 'Boomerang / Round-trip',
+  PepOffshore: 'PEP + Offshore',
+};
+
+export function AlertsPanel() {
+  const alerts = useAlertsStore((state) => state.alerts);
+  const unreadCount = useAlertsStore((state) => state.unreadCount);
+  const selectedAlertId = useAlertsStore((state) => state.selectedAlertId);
+  const severityFilter = useAlertsStore((state) => state.severityFilter);
+  const isLoading = useAlertsStore((state) => state.isLoading);
+  const setFilter = useAlertsStore((state) => state.setFilter);
+  const selectAlert = useAlertsStore((state) => state.selectAlert);
+  const markRead = useAlertsStore((state) => state.markRead);
+  const highlightAlert = useGraphStore((state) => state.highlightAlert);
+
+  const filteredAlerts = alerts.filter((alert) => severityFilter === 'All' || alert.severity === severityFilter);
+
+  const investigate = (alert: AmlAlert) => {
+    selectAlert(alert.id);
+    highlightAlert(alert.id);
+    markRead();
+  };
+
   return (
-    <aside className="glass-panel alerts-panel">
-      <div className="panel-heading">
-        <div>
-          <p className="eyebrow">Rule Engine</p>
-          <h2>Circular-flow alerts</h2>
+    <aside className="alerts-rail">
+      <header className="alerts-brand">
+        <div className="brand-lockup">
+          <span className="brand-mark">V</span>
+          <div>
+            <strong>Vigilant AML</strong>
+            <small>Real-time monitoring</small>
+          </div>
         </div>
-        <span className="alert-count">{alerts.length}</span>
-      </div>
+      </header>
 
-      <div className="alert-list">
-        {alerts.length === 0 ? (
-          <p className="empty-state">No circular-flow alerts yet. Seed demo data to trigger the laundering ring.</p>
-        ) : (
-          alerts.map((alert) => (
-            <article className={`alert-item alert-item--${alert.severity.toLowerCase()}`} key={alert.id}>
-              <div className="alert-item__topline">
-                <strong>{alert.severity}</strong>
-                <span>{formatMoney(alert.totalAmount)}</span>
-              </div>
-              <p>{alert.message}</p>
-              <small>{alert.accountIban}</small>
-            </article>
-          ))
-        )}
-      </div>
+      <nav className="severity-tabs" aria-label="Alert severity filter">
+        {filters.map((filter) => (
+          <button
+            className={severityFilter === filter ? 'severity-tab severity-tab--active' : 'severity-tab'}
+            key={filter}
+            onClick={() => setFilter(filter)}
+            type="button"
+          >
+            <span>{filter}</span>
+            {filter === 'All' && unreadCount > 0 ? <b>{unreadCount}</b> : null}
+          </button>
+        ))}
+      </nav>
+
+      <section className="alert-feed" aria-label="AML alert feed">
+        {isLoading ? <AlertSkeletons /> : null}
+        {!isLoading && filteredAlerts.length === 0 ? (
+          <p className="empty-alert-feed">No alerts for this severity. Seed demo data or wait for live detections.</p>
+        ) : null}
+        {!isLoading && filteredAlerts.map((alert) => (
+          <article
+            className={selectedAlertId === alert.id ? 'alert-card alert-card--selected' : 'alert-card'}
+            key={alert.id}
+          >
+            <div className="alert-card__topline">
+              <SeverityBadge severity={alert.severity} />
+              <span>{formatRelativeTime(alert.detectedAtUtc)}</span>
+            </div>
+            <h3>{alertTypeLabels[alert.type] ?? alert.type}</h3>
+            <p>{alert.message}</p>
+            <button className="investigate-button" type="button" onClick={() => investigate(alert)}>
+              Investigate
+            </button>
+          </article>
+        ))}
+      </section>
     </aside>
   );
 }
 
-function formatMoney(value: number): string {
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'EUR',
-    maximumFractionDigits: 0,
-  }).format(value);
+function SeverityBadge({ severity }: { severity: AlertSeverity }) {
+  return <strong className={`severity-badge severity-badge--${severity.toLowerCase()}`}>{severity}</strong>;
 }
 
+function AlertSkeletons() {
+  return (
+    <>
+      {Array.from({ length: 5 }, (_, index) => (
+        <article className="alert-card alert-card--skeleton" key={index}>
+          <span />
+          <strong />
+          <p />
+          <i />
+        </article>
+      ))}
+    </>
+  );
+}
+
+function formatRelativeTime(value: string): string {
+  const timestamp = new Date(value).getTime();
+  const deltaSeconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+
+  if (deltaSeconds < 60) {
+    return `${deltaSeconds || 1} sec ago`;
+  }
+
+  const deltaMinutes = Math.floor(deltaSeconds / 60);
+  if (deltaMinutes < 60) {
+    return `${deltaMinutes} min ago`;
+  }
+
+  const deltaHours = Math.floor(deltaMinutes / 60);
+  if (deltaHours < 24) {
+    return `${deltaHours} h ago`;
+  }
+
+  return `${Math.floor(deltaHours / 24)} d ago`;
+}

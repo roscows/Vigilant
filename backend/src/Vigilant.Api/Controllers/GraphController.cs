@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Swashbuckle.AspNetCore.Annotations;
 using Vigilant.Application.Common.Graph;
 using Vigilant.Application.Graph.GetEntityGraph;
+using Vigilant.Application.Graph.GetGraphOverview;
 
 namespace Vigilant.Api.Controllers;
 
@@ -11,6 +12,19 @@ namespace Vigilant.Api.Controllers;
 [Produces("application/json")]
 public sealed class GraphController(ISender sender) : ControllerBase
 {
+    [HttpGet("overview")]
+    [SwaggerOperation(
+        Summary = "Returns the default graph network overview",
+        Description = "Returns a bounded full-network graph overview for the analyst dashboard without creating demo data.")]
+    [ProducesResponseType(typeof(EntityGraphDto), StatusCodes.Status200OK)]
+    public async Task<ActionResult<EntityGraphDto>> GetGraphOverview(
+        [FromQuery] int nodeLimit = 250,
+        CancellationToken cancellationToken = default)
+    {
+        var graph = await sender.Send(new GetGraphOverviewQuery(nodeLimit), cancellationToken);
+        return Ok(graph);
+    }
+
     [HttpGet("accounts/{iban}")]
     [SwaggerOperation(
         Summary = "Returns graph network data for an account",

@@ -1,6 +1,7 @@
-namespace Vigilant.Application.Common.Graph;
+﻿namespace Vigilant.Application.Common.Graph;
 
 public sealed record ClientGraphSnapshot(
     string Id,
     string Name,
-    decimal RiskScore);
+    decimal RiskScore,
+    bool IsPep = false);

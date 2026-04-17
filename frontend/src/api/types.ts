@@ -1,4 +1,5 @@
 ﻿export type AlertSeverity = 'Medium' | 'High' | 'Critical';
+export type AlertSeverityFilter = 'All' | AlertSeverity;
 
 export interface AmlAlert {
   id: string;
@@ -9,12 +10,16 @@ export interface AmlAlert {
   totalAmount: number;
   transactionIds: string[];
   accountIbans: string[];
+  clientIds: string[];
+  deviceIds: string[];
+  ipAddresses: string[];
+  involvedNodeKeys: string[];
   detectedAtUtc: string;
 }
 
 export interface EntityGraphNode {
   id: string;
-  label: string;
+  label: 'Client' | 'Account' | 'Transaction' | 'IpAddress' | 'Device' | string;
   labels: string[];
   properties: Record<string, unknown>;
 }
@@ -32,6 +37,13 @@ export interface EntityGraph {
   edges: EntityGraphEdge[];
 }
 
+export interface ClientSnapshot {
+  id: string;
+  name: string;
+  riskScore: number;
+  isPep?: boolean;
+}
+
 export interface ProcessTransactionPayload {
   senderIban: string;
   receiverIban: string;
@@ -41,14 +53,10 @@ export interface ProcessTransactionPayload {
   ipAddress: string;
   ipCountryCode?: string;
   browserFingerprint?: string;
+  senderAccountCountryCode?: string;
+  receiverAccountCountryCode?: string;
   senderClient?: ClientSnapshot;
   receiverClient?: ClientSnapshot;
-}
-
-export interface ClientSnapshot {
-  id: string;
-  name: string;
-  riskScore: number;
 }
 
 export interface ProcessTransactionResult {
@@ -58,6 +66,7 @@ export interface ProcessTransactionResult {
   amount: number;
   currency: string;
   processedAtUtc: string;
+  triggeredAlerts: AmlAlert[];
 }
 
 export interface SeedTransactionsPayload {
@@ -78,3 +87,14 @@ export interface SeedTransactionsResult {
   triggeredAlerts: AmlAlert[];
 }
 
+export interface RiskContribution {
+  alertType: string;
+  description: string;
+  weight: number;
+}
+
+export interface ClientRiskScore {
+  clientId: string;
+  riskScore: number;
+  contributingAlerts: RiskContribution[];
+}

@@ -1,6 +1,8 @@
-using System.Reflection;
+﻿using System.Reflection;
 using Microsoft.OpenApi.Models;
 using Vigilant.Api.Hubs;
+using Vigilant.Api.Services;
+using Vigilant.Application.Common.Alerts;
 using Vigilant.Application;
 using Vigilant.Infrastructure;
 
@@ -11,6 +13,7 @@ builder.Services.AddInfrastructure(builder.Configuration);
 
 builder.Services.AddControllers();
 builder.Services.AddSignalR();
+builder.Services.AddScoped<IAlertPublisher, SignalRAlertPublisher>();
 
 builder.Services.AddCors(options =>
 {
@@ -65,3 +68,4 @@ app.MapControllers();
 app.MapHub<AlertsHub>("/hubs/alerts");
 
 app.Run();
+

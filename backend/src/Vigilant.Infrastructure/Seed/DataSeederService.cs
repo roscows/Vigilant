@@ -1,11 +1,15 @@
-using Bogus;
+﻿using Bogus;
+using Vigilant.Application.Alerts.Detection;
 using Vigilant.Application.Common.Graph;
 using Vigilant.Application.Transactions.SeedTransactions;
 
 namespace Vigilant.Infrastructure.Seed;
 
-public sealed class DataSeederService(INeo4jRepository neo4jRepository) : ITransactionSeedService
+public sealed class DataSeederService(
+    INeo4jRepository neo4jRepository,
+    IAmlDetectionService amlDetectionService) : ITransactionSeedService
 {
+    private static readonly string[] OffshoreCountryCodes = ["VG", "KY", "PA", "SC", "BZ", "VU"];
     private const string Currency = "EUR";
     private readonly Faker _faker = new("en");
 
@@ -18,15 +22,12 @@ public sealed class DataSeederService(INeo4jRepository neo4jRepository) : ITrans
         var randomTransactionCount = Math.Clamp(request.RandomTransactionCount, 12, 600);
         var circularFlowCount = Math.Clamp(request.CircularFlowCount, 1, 12);
 
-        var clients = Enumerable.Range(1, clientCount)
-            .Select(CreateClient)
-            .ToArray();
-
+        var clients = Enumerable.Range(1, clientCount).Select(CreateClient).ToArray();
         var accounts = Enumerable.Range(1, accountCount)
             .Select(index => CreateAccount(index, clients[(index - 1) % clients.Length]))
             .ToArray();
 
-        var transactionIds = new List<string>(randomTransactionCount + circularFlowCount * 3);
+        var transactionIds = new List<string>(randomTransactionCount + circularFlowCount * 3 + 16);
         var circularAccountIbans = new List<string>(circularFlowCount * 3);
         var baseTimeUtc = DateTimeOffset.UtcNow.AddMinutes(-15);
 
@@ -36,9 +37,7 @@ public sealed class DataSeederService(INeo4jRepository neo4jRepository) : ITrans
             var receiver = _faker.PickRandom(accounts.Where(account => account.Iban != sender.Iban).ToArray());
             var amount = _faker.Finance.Amount(150, 18_500, 2);
             var timestampUtc = DateTimeOffset.UtcNow.AddMinutes(-_faker.Random.Int(20, 1_800));
-
-            var writeModel = CreateTransactionWriteModel(sender, receiver, amount, timestampUtc, isCircularFlow: false);
-            var result = await neo4jRepository.WriteTransactionGraphAsync(writeModel, cancellationToken);
+            var result = await WriteSeedTransactionAsync(sender, receiver, amount, timestampUtc, "seed-txn", false, cancellationToken);
             transactionIds.Add(result.TransactionId);
         }
 
@@ -46,10 +45,8 @@ public sealed class DataSeederService(INeo4jRepository neo4jRepository) : ITrans
         {
             var ring = PickCircularAccounts(accounts);
             circularAccountIbans.AddRange(ring.Select(account => account.Iban));
-
             var amount = _faker.Finance.Amount(11_000, 32_000, 2);
             var flowTimeUtc = baseTimeUtc.AddMinutes(flowIndex * 3);
-
             var cycle = new[]
             {
                 (Sender: ring[0], Receiver: ring[1], Amount: amount),
@@ -60,27 +57,28 @@ public sealed class DataSeederService(INeo4jRepository neo4jRepository) : ITrans
             for (var step = 0; step < cycle.Length; step++)
             {
                 var transaction = cycle[step];
-                var writeModel = CreateTransactionWriteModel(
+                var result = await WriteSeedTransactionAsync(
                     transaction.Sender,
                     transaction.Receiver,
                     transaction.Amount,
                     flowTimeUtc.AddSeconds(step * 47),
-                    isCircularFlow: true);
+                    "seed-cycle",
+                    true,
+                    cancellationToken);
 
-                var result = await neo4jRepository.WriteTransactionGraphAsync(writeModel, cancellationToken);
                 transactionIds.Add(result.TransactionId);
             }
         }
 
-        var triggeredAlerts = await neo4jRepository.FindCircularFlowsAsync(
-            maxTransfers: 4,
-            lookbackWindow: TimeSpan.FromHours(24),
-            limit: 25,
-            cancellationToken: cancellationToken);
+        await AddSmurfingScenarioAsync(accounts, transactionIds, cancellationToken);
+        await AddRapidFanOutScenarioAsync(accounts, transactionIds, cancellationToken);
+        await AddPepOffshoreScenarioAsync(accounts, transactionIds, cancellationToken);
 
-        var distinctCircularIbans = circularAccountIbans
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
+        var alerts = await amlDetectionService.EvaluateAndPublishAsync(
+            CreateTransactionWriteModel(accounts[0], accounts[1], 1m, DateTimeOffset.UtcNow, "seed-evaluation", false),
+            cancellationToken);
+
+        var distinctCircularIbans = circularAccountIbans.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
 
         return new SeedTransactionsResult(
             ClientsCreated: clients.Length,
@@ -90,21 +88,102 @@ public sealed class DataSeederService(INeo4jRepository neo4jRepository) : ITrans
             FocusAccountIban: distinctCircularIbans[0],
             CircularAccountIbans: distinctCircularIbans,
             TransactionIds: transactionIds,
-            TriggeredAlerts: triggeredAlerts);
+            TriggeredAlerts: alerts);
+    }
+
+    private async Task AddSmurfingScenarioAsync(
+        IReadOnlyList<SeedAccount> accounts,
+        List<string> transactionIds,
+        CancellationToken cancellationToken)
+    {
+        var sender = accounts[2];
+        for (var index = 0; index < 6; index++)
+        {
+            var receiver = accounts[10 + index];
+            var result = await WriteSeedTransactionAsync(
+                sender,
+                receiver,
+                8_250m,
+                DateTimeOffset.UtcNow.AddMinutes(-50 + index * 4),
+                "seed-smurfing",
+                false,
+                cancellationToken);
+            transactionIds.Add(result.TransactionId);
+        }
+    }
+
+    private async Task AddRapidFanOutScenarioAsync(
+        IReadOnlyList<SeedAccount> accounts,
+        List<string> transactionIds,
+        CancellationToken cancellationToken)
+    {
+        var sender = accounts[3];
+        for (var index = 0; index < 5; index++)
+        {
+            var receiver = accounts[20 + index];
+            var result = await WriteSeedTransactionAsync(
+                sender,
+                receiver,
+                3_500m + index * 250m,
+                DateTimeOffset.UtcNow.AddMinutes(-35 + index * 3),
+                "seed-fanout",
+                false,
+                cancellationToken);
+            transactionIds.Add(result.TransactionId);
+        }
+    }
+
+    private async Task AddPepOffshoreScenarioAsync(
+        IReadOnlyList<SeedAccount> accounts,
+        List<string> transactionIds,
+        CancellationToken cancellationToken)
+    {
+        var result = await WriteSeedTransactionAsync(
+            accounts[0],
+            accounts[1],
+            72_500m,
+            DateTimeOffset.UtcNow.AddMinutes(-10),
+            "seed-pep-offshore",
+            false,
+            cancellationToken);
+        transactionIds.Add(result.TransactionId);
+    }
+
+    private async Task<TransactionGraphWriteResult> WriteSeedTransactionAsync(
+        SeedAccount sender,
+        SeedAccount receiver,
+        decimal amount,
+        DateTimeOffset timestampUtc,
+        string prefix,
+        bool isCircularFlow,
+        CancellationToken cancellationToken)
+    {
+        var writeModel = CreateTransactionWriteModel(sender, receiver, amount, timestampUtc, prefix, isCircularFlow);
+        return await neo4jRepository.WriteTransactionGraphAsync(writeModel, cancellationToken);
     }
 
     private ClientGraphSnapshot CreateClient(int index)
     {
         var name = _faker.Name.FullName();
-        var riskScore = Math.Round(_faker.Random.Decimal(8, 92), 2);
-        return new ClientGraphSnapshot($"seed-client-{index:000}-{_faker.Random.AlphaNumeric(5)}", name, riskScore);
+        var isPep = index == 1 || _faker.Random.Bool(0.12f);
+        var riskScore = index is 1 or 2 or 3
+            ? _faker.Random.Decimal(65, 92)
+            : _faker.Random.Decimal(8, 74);
+
+        return new ClientGraphSnapshot($"seed-client-{index:000}-{_faker.Random.AlphaNumeric(5)}", name, Math.Round(riskScore, 2), isPep);
     }
 
     private SeedAccount CreateAccount(int index, ClientGraphSnapshot owner)
     {
         var iban = $"RS{_faker.Random.ReplaceNumbers("####################")}";
         var balance = _faker.Finance.Amount(1_000, 180_000, 2);
-        return new SeedAccount(iban, balance, owner);
+        var countryCode = index == 1
+            ? "KY"
+            : _faker.Random.Bool(0.16f)
+                ? _faker.PickRandom(OffshoreCountryCodes)
+                : _faker.Address.CountryCode().ToUpperInvariant();
+
+        return new SeedAccount(iban, balance, countryCode, owner);
     }
 
     private SeedAccount[] PickCircularAccounts(IReadOnlyCollection<SeedAccount> accounts)
@@ -117,9 +196,9 @@ public sealed class DataSeederService(INeo4jRepository neo4jRepository) : ITrans
         SeedAccount receiver,
         decimal amount,
         DateTimeOffset timestampUtc,
+        string transactionPrefix,
         bool isCircularFlow)
     {
-        var transactionPrefix = isCircularFlow ? "seed-cycle" : "seed-txn";
         var deviceId = isCircularFlow
             ? $"shared-layering-device-{_faker.Random.Int(1, 4):00}"
             : $"device-{_faker.Random.AlphaNumeric(10).ToLowerInvariant()}";
@@ -133,19 +212,20 @@ public sealed class DataSeederService(INeo4jRepository neo4jRepository) : ITrans
             TimestampUtc: timestampUtc,
             DeviceId: deviceId,
             IpAddress: isCircularFlow ? $"198.51.100.{_faker.Random.Int(10, 220)}" : _faker.Internet.Ip(),
-            IpCountryCode: isCircularFlow ? "CY" : _faker.Address.CountryCode(),
-            BrowserFingerprint: isCircularFlow
-                ? $"layering-fingerprint-{_faker.Random.Int(1, 3):00}"
-                : _faker.Random.Hash(24),
+            IpCountryCode: isCircularFlow ? "CY" : _faker.Address.CountryCode().ToUpperInvariant(),
+            BrowserFingerprint: isCircularFlow ? $"layering-fingerprint-{_faker.Random.Int(1, 3):00}" : _faker.Random.Hash(24),
             SenderClient: sender.Owner,
             ReceiverClient: receiver.Owner,
             SenderBalance: sender.Balance,
-            ReceiverBalance: receiver.Balance);
+            ReceiverBalance: receiver.Balance,
+            SenderAccountCountryCode: sender.CountryCode,
+            ReceiverAccountCountryCode: receiver.CountryCode);
     }
 
     private sealed record SeedAccount(
         string Iban,
         decimal Balance,
+        string CountryCode,
         ClientGraphSnapshot Owner);
 }
 

@@ -1,4 +1,4 @@
-using MediatR;
+﻿using MediatR;
 using Vigilant.Application.Common.Graph;
 
 namespace Vigilant.Application.Transactions.ProcessTransaction;
@@ -13,7 +13,9 @@ public sealed record TransactionProcessorCommand(
     string? IpCountryCode = null,
     string? BrowserFingerprint = null,
     ClientGraphSnapshot? SenderClient = null,
-    ClientGraphSnapshot? ReceiverClient = null) : IRequest<TransactionProcessorResult>;
+    ClientGraphSnapshot? ReceiverClient = null,
+    string? SenderAccountCountryCode = null,
+    string? ReceiverAccountCountryCode = null) : IRequest<TransactionProcessorResult>;
 
 public sealed record TransactionProcessorResult(
     string TransactionId,
@@ -21,4 +23,5 @@ public sealed record TransactionProcessorResult(
     string ReceiverIban,
     decimal Amount,
     string Currency,
-    DateTimeOffset ProcessedAtUtc);
+    DateTimeOffset ProcessedAtUtc,
+    IReadOnlyCollection<AmlAlertDto> TriggeredAlerts);

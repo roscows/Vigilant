@@ -1,9 +1,7 @@
-using MediatR;
+﻿using MediatR;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.AspNetCore.SignalR;
 using Swashbuckle.AspNetCore.Annotations;
 using Vigilant.Api.Contracts.Transactions;
-using Vigilant.Api.Hubs;
 using Vigilant.Application.Transactions.ProcessTransaction;
 using Vigilant.Application.Transactions.SeedTransactions;
 
@@ -14,13 +12,12 @@ namespace Vigilant.Api.Controllers;
 [Produces("application/json")]
 public sealed class TransactionsController(
     ISender sender,
-    ITransactionSeedService transactionSeedService,
-    IHubContext<AlertsHub> alertsHub) : ControllerBase
+    ITransactionSeedService transactionSeedService) : ControllerBase
 {
     [HttpPost("process")]
     [SwaggerOperation(
         Summary = "Ingests a transaction into the AML graph",
-        Description = "Creates the Account, Transaction, IpAddress, and Device graph block and links optional Client ownership context.")]
+        Description = "Creates the graph block, evaluates AML rules, recomputes client risk, and broadcasts alerts.")]
     [ProducesResponseType(typeof(TransactionProcessorResult), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<ActionResult<TransactionProcessorResult>> Process(
@@ -37,7 +34,9 @@ public sealed class TransactionsController(
             IpCountryCode: request.IpCountryCode,
             BrowserFingerprint: request.BrowserFingerprint,
             SenderClient: request.ToSenderClientSnapshot(),
-            ReceiverClient: request.ToReceiverClientSnapshot());
+            ReceiverClient: request.ToReceiverClientSnapshot(),
+            SenderAccountCountryCode: request.SenderAccountCountryCode,
+            ReceiverAccountCountryCode: request.ReceiverAccountCountryCode);
 
         var result = await sender.Send(command, cancellationToken);
         return Ok(result);
@@ -46,7 +45,7 @@ public sealed class TransactionsController(
     [HttpPost("seed")]
     [SwaggerOperation(
         Summary = "Seeds a realistic AML demo graph",
-        Description = "Generates clients, accounts, transactions, devices, IP addresses, and deliberate circular-flow transactions, then broadcasts detected alerts over SignalR.")]
+        Description = "Generates clients, accounts, transactions, devices, IP addresses, and deliberate AML typology examples.")]
     [ProducesResponseType(typeof(SeedTransactionsResult), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<ActionResult<SeedTransactionsResult>> Seed(
@@ -54,13 +53,6 @@ public sealed class TransactionsController(
         CancellationToken cancellationToken)
     {
         var result = await transactionSeedService.SeedAsync(request.ToApplicationRequest(), cancellationToken);
-
-        if (result.TriggeredAlerts.Count > 0)
-        {
-            await alertsHub.Clients.Group(AlertsHub.AllAlertsGroup)
-                .SendAsync("alerts.detected", result.TriggeredAlerts, cancellationToken);
-        }
-
         return Ok(result);
     }
 }

@@ -1,4 +1,4 @@
-namespace Vigilant.Application.Common.Graph;
+﻿namespace Vigilant.Application.Common.Graph;
 
 public sealed record TransactionGraphWriteModel(
     string TransactionId,
@@ -14,4 +14,6 @@ public sealed record TransactionGraphWriteModel(
     ClientGraphSnapshot? SenderClient,
     ClientGraphSnapshot? ReceiverClient,
     decimal? SenderBalance = null,
-    decimal? ReceiverBalance = null);
+    decimal? ReceiverBalance = null,
+    string? SenderAccountCountryCode = null,
+    string? ReceiverAccountCountryCode = null);

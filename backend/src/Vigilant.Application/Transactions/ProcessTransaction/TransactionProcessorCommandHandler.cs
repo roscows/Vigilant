@@ -1,10 +1,12 @@
-using MediatR;
+﻿using MediatR;
+using Vigilant.Application.Alerts.Detection;
 using Vigilant.Application.Common.Graph;
 
 namespace Vigilant.Application.Transactions.ProcessTransaction;
 
 public sealed class TransactionProcessorCommandHandler(
-    INeo4jRepository neo4jRepository) : IRequestHandler<TransactionProcessorCommand, TransactionProcessorResult>
+    INeo4jRepository neo4jRepository,
+    IAmlDetectionService amlDetectionService) : IRequestHandler<TransactionProcessorCommand, TransactionProcessorResult>
 {
     public async Task<TransactionProcessorResult> Handle(
         TransactionProcessorCommand request,
@@ -24,12 +26,15 @@ public sealed class TransactionProcessorCommandHandler(
             TimestampUtc: timestampUtc,
             DeviceId: request.DeviceId.Trim(),
             IpAddress: request.IpAddress.Trim(),
-            IpCountryCode: string.IsNullOrWhiteSpace(request.IpCountryCode) ? null : request.IpCountryCode.Trim().ToUpperInvariant(),
+            IpCountryCode: NormalizeCountryCode(request.IpCountryCode),
             BrowserFingerprint: string.IsNullOrWhiteSpace(request.BrowserFingerprint) ? null : request.BrowserFingerprint.Trim(),
             SenderClient: request.SenderClient,
-            ReceiverClient: request.ReceiverClient);
+            ReceiverClient: request.ReceiverClient,
+            SenderAccountCountryCode: NormalizeCountryCode(request.SenderAccountCountryCode),
+            ReceiverAccountCountryCode: NormalizeCountryCode(request.ReceiverAccountCountryCode));
 
         await neo4jRepository.WriteTransactionGraphAsync(graphWrite, cancellationToken);
+        var triggeredAlerts = await amlDetectionService.EvaluateAndPublishAsync(graphWrite, cancellationToken);
 
         return new TransactionProcessorResult(
             transactionId,
@@ -37,7 +42,13 @@ public sealed class TransactionProcessorCommandHandler(
             graphWrite.ReceiverIban,
             graphWrite.Amount,
             graphWrite.Currency,
-            timestampUtc);
+            timestampUtc,
+            triggeredAlerts);
+    }
+
+    private static string? NormalizeCountryCode(string? countryCode)
+    {
+        return string.IsNullOrWhiteSpace(countryCode) ? null : countryCode.Trim().ToUpperInvariant();
     }
 
     private static void Validate(TransactionProcessorCommand request)

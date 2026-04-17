@@ -1,4 +1,4 @@
-using Vigilant.Application.Common.Graph;
+﻿using Vigilant.Application.Common.Graph;
 
 namespace Vigilant.Api.Contracts.Transactions;
 
@@ -11,6 +11,8 @@ public sealed record ProcessTransactionRequest(
     string IpAddress,
     string? IpCountryCode,
     string? BrowserFingerprint,
+    string? SenderAccountCountryCode,
+    string? ReceiverAccountCountryCode,
     ClientSnapshotRequest? SenderClient,
     ClientSnapshotRequest? ReceiverClient)
 {
@@ -21,7 +23,8 @@ public sealed record ProcessTransactionRequest(
 public sealed record ClientSnapshotRequest(
     string Id,
     string Name,
-    decimal RiskScore)
+    decimal RiskScore,
+    bool IsPep = false)
 {
-    public ClientGraphSnapshot ToSnapshot() => new(Id, Name, RiskScore);
+    public ClientGraphSnapshot ToSnapshot() => new(Id, Name, RiskScore, IsPep);
 }

@@ -1,3 +1,7 @@
-namespace Vigilant.Domain.Graph;
+﻿namespace Vigilant.Domain.Graph;
 
-public sealed record AccountNode(string Id, string Iban, decimal Balance);
+public sealed record AccountNode(
+    string Id,
+    string Iban,
+    decimal Balance,
+    string? CountryCode = null);
