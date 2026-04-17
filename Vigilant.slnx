@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/backend/" />
+  <Folder Name="/backend/src/">
+    <Project Path="backend/src/Vigilant.Api/Vigilant.Api.csproj" />
+    <Project Path="backend/src/Vigilant.Application/Vigilant.Application.csproj" />
+    <Project Path="backend/src/Vigilant.Domain/Vigilant.Domain.csproj" />
+    <Project Path="backend/src/Vigilant.Infrastructure/Vigilant.Infrastructure.csproj" />
+  </Folder>
+</Solution>

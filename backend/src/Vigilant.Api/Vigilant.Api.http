@@ -1,0 +1,42 @@
+﻿@Vigilant.Api_HostAddress = https://localhost:7125
+
+POST {{Vigilant.Api_HostAddress}}/api/transactions/process
+Content-Type: application/json
+
+{
+  "senderIban": "RS35105008123123123173",
+  "receiverIban": "RS35260005601001611379",
+  "amount": 12450.25,
+  "currency": "EUR",
+  "deviceId": "device-android-991",
+  "ipAddress": "203.0.113.42",
+  "ipCountryCode": "RS",
+  "browserFingerprint": "fp_8fb7c40",
+  "senderClient": {
+    "id": "client-001",
+    "name": "Milan Petrovic",
+    "riskScore": 42
+  },
+  "receiverClient": {
+    "id": "client-002",
+    "name": "Ana Jovanovic",
+    "riskScore": 18
+  }
+}
+
+###
+POST {{Vigilant.Api_HostAddress}}/api/transactions/seed
+Content-Type: application/json
+
+{
+  "clientCount": 20,
+  "accountCount": 34,
+  "randomTransactionCount": 72,
+  "circularFlowCount": 3
+}
+
+###
+GET {{Vigilant.Api_HostAddress}}/api/alerts?maxTransfers=4&lookbackHours=24&limit=25
+
+###
+GET {{Vigilant.Api_HostAddress}}/api/graph/accounts/RS35105008123123123173?depth=5
