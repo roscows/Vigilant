@@ -1,7 +1,7 @@
 import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import ForceGraph2D, { type ForceGraphMethods, type NodeObject } from 'react-force-graph-2d';
 import type { EntityGraphEdge, EntityGraphNode } from '../api/types';
-import { useAlertsStore } from '../store/alertsStore';
+import { useAlertsStore, type AccountAlertFocus } from '../store/alertsStore';
 import { useGraphStore } from '../store/graphStore';
 
 interface AmlGraphViewerProps {
@@ -12,8 +12,15 @@ interface AmlGraphViewerProps {
 
 type GraphNode = EntityGraphNode & { name: string; val: number };
 type GraphLink = EntityGraphEdge & { source: string; target: string; label: string };
+type KnownNodeLabel = 'Client' | 'Account' | 'Transaction' | 'IpAddress' | 'Device';
+interface GraphLookup {
+  nodesByKey: Map<string, GraphNode>;
+  ownerByAccountKey: Map<string, GraphNode>;
+  outboundAccountByTransactionKey: Map<string, GraphNode>;
+  inboundAccountByTransactionKey: Map<string, GraphNode>;
+}
 
-const nodeColors: Record<string, string> = {
+const nodeColors: Record<KnownNodeLabel, string> = {
   Client: '#3b82f6',
   Account: '#10b981',
   Transaction: '#f59e0b',
@@ -30,6 +37,14 @@ const edgeColors: Record<string, string> = {
   USES_DEVICE: 'rgba(236, 72, 153, 0.36)',
 };
 
+const nodeLegend = [
+  { label: 'Client', color: nodeColors.Client },
+  { label: 'Account', color: nodeColors.Account },
+  { label: 'Transaction', color: nodeColors.Transaction },
+  { label: 'IP', color: nodeColors.IpAddress },
+  { label: 'Device', color: nodeColors.Device },
+];
+
 export function AmlGraphViewer({ onLoadOverview, onSearchIban, highlightedAccountIds = [] }: AmlGraphViewerProps) {
   const graphRef = useRef<ForceGraphMethods<GraphNode, GraphLink> | undefined>(undefined);
   const frameRef = useRef<HTMLDivElement | null>(null);
@@ -37,7 +52,7 @@ export function AmlGraphViewer({ onLoadOverview, onSearchIban, highlightedAccoun
   const links = useGraphStore((state) => state.links);
   const loading = useGraphStore((state) => state.loading);
   const highlightedNodeKeys = useGraphStore((state) => state.highlightedNodeKeys);
-  const isRealtimeConnected = useAlertsStore((state) => state.isRealtimeConnected);
+  const setAccountFocus = useAlertsStore((state) => state.setAccountFocus);
   const [hoveredNode, setHoveredNode] = useState<GraphNode | null>(null);
   const [ibanSearch, setIbanSearch] = useState('');
   const [size, setSize] = useState({ width: 900, height: 640 });
@@ -68,6 +83,7 @@ export function AmlGraphViewer({ onLoadOverview, onSearchIban, highlightedAccoun
     nodes: nodes.map(toGraphNode),
     links: links.map((link) => ({ ...link, source: link.sourceId, target: link.targetId, label: link.type })),
   }), [links, nodes]);
+  const graphLookup = useMemo(() => buildGraphLookup(graphData.nodes, links), [graphData.nodes, links]);
 
   const highlightedKeys = useMemo(
     () => new Set([...highlightedNodeKeys, ...highlightedAccountIds].map((key) => key.toLowerCase())),
@@ -86,13 +102,24 @@ export function AmlGraphViewer({ onLoadOverview, onSearchIban, highlightedAccoun
     void onSearchIban(trimmedIban);
   };
 
+  const focusNodeAlerts = (node: GraphNode) => {
+    const focus = buildAccountAlertFocus(node, graphData.nodes, links);
+    if (!focus) {
+      return;
+    }
+
+    setAccountFocus(focus);
+    setIbanSearch(focus.ibanQuery);
+
+    const firstIban = focus.ibanQuery.split(',')[0]?.trim();
+    if (firstIban) {
+      void onSearchIban(firstIban);
+    }
+  };
+
   return (
     <section className="graph-workspace">
       <header className="graph-toolbar glass-panel">
-        <div>
-          <p className="eyebrow">Investigation Graph</p>
-          <h1>Entity Network</h1>
-        </div>
         <div className="graph-toolbar__actions">
           <form className="iban-search" onSubmit={submitIbanSearch}>
             <label htmlFor="iban-search">Focus on IBAN</label>
@@ -111,17 +138,23 @@ export function AmlGraphViewer({ onLoadOverview, onSearchIban, highlightedAccoun
               </button>
             </div>
           </form>
-          <span className="connection-status">
-            <i className={isRealtimeConnected ? 'status-dot status-dot--online' : 'status-dot status-dot--offline'} />
-            {isRealtimeConnected ? 'Live' : 'Disconnected'}
-          </span>
-          <button type="button" onClick={() => void onLoadOverview()} disabled={loading}>
-            Reset View
-          </button>
-          <button className="secondary-button" type="button" onClick={() => graphRef.current?.zoomToFit(500, 80)}>
-            Fit View
-          </button>
+          <div className="graph-toolbar__buttons">
+            <button type="button" onClick={() => void onLoadOverview()} disabled={loading}>
+              Reset View
+            </button>
+            <button className="secondary-button" type="button" onClick={() => graphRef.current?.zoomToFit(500, 80)}>
+              Fit View
+            </button>
+          </div>
         </div>
+        <ul className="node-legend" aria-label="Graph node legend">
+          {nodeLegend.map((item) => (
+            <li key={item.label}>
+              <i style={{ backgroundColor: item.color }} />
+              <span><strong>{item.label}</strong></span>
+            </li>
+          ))}
+        </ul>
       </header>
 
       <div className="graph-canvas-card glass-panel" ref={frameRef}>
@@ -141,10 +174,11 @@ export function AmlGraphViewer({ onLoadOverview, onSearchIban, highlightedAccoun
             backgroundColor="rgba(15, 17, 23, 0)"
             nodeId="id"
             nodeVal="val"
-            nodeLabel={(node) => buildTooltip(node as GraphNode)}
+            nodeLabel={(node) => buildTooltip(node as GraphNode, graphLookup)}
             nodeCanvasObject={(node, ctx, scale) => paintNode(node, ctx, scale, highlightedKeys, hasHighlight)}
             nodePointerAreaPaint={paintNodePointerArea}
             onNodeHover={(node) => setHoveredNode(node as GraphNode | null)}
+            onNodeClick={(node) => focusNodeAlerts(node as GraphNode)}
             linkSource="source"
             linkTarget="target"
             linkLabel={(link) => (link as GraphLink).label}
@@ -163,7 +197,7 @@ export function AmlGraphViewer({ onLoadOverview, onSearchIban, highlightedAccoun
             enableZoomInteraction
           />
         ) : null}
-        {hoveredNode ? <NodeTooltip node={hoveredNode} /> : null}
+        {hoveredNode ? <NodeTooltip node={hoveredNode} graphLookup={graphLookup} /> : null}
       </div>
     </section>
   );
@@ -190,7 +224,7 @@ function paintNode(
   const radius = getNodeRadius(graphNode);
   const isHighlighted = !hasHighlight || nodeMatchesKeys(graphNode, highlightedKeys);
   const alpha = isHighlighted ? 1 : 0.15;
-  const color = nodeColors[graphNode.label] ?? '#94a3b8';
+  const color = getNodeColor(graphNode);
 
   ctx.save();
   ctx.globalAlpha = alpha;
@@ -223,12 +257,28 @@ function paintNode(
   ctx.restore();
 }
 
-function paintNodePointerArea(node: NodeObject<GraphNode>, color: string, ctx: CanvasRenderingContext2D) {
+function paintNodePointerArea(node: NodeObject<GraphNode>, color: string, ctx: CanvasRenderingContext2D, globalScale = 1) {
   const graphNode = node as GraphNode;
+  const x = node.x ?? 0;
+  const y = node.y ?? 0;
+  const radius = getNodeRadius(graphNode);
+  const label = truncate(graphNode.name, 22);
+  const fontSize = Math.max(4, 11 / globalScale);
+  const labelWidth = Math.max(radius * 2, label.length * fontSize * 0.62);
+  const labelHeight = Math.max(12, 16 / globalScale);
+  const labelTop = y + radius + 2 / globalScale;
+
   ctx.fillStyle = color;
   ctx.beginPath();
-  ctx.arc(node.x ?? 0, node.y ?? 0, getNodeRadius(graphNode) + 5, 0, Math.PI * 2);
+  ctx.arc(x, y, radius + 18, 0, Math.PI * 2);
   ctx.fill();
+
+  ctx.fillRect(
+    x - labelWidth / 2 - 6 / globalScale,
+    labelTop,
+    labelWidth + 12 / globalScale,
+    labelHeight + 6 / globalScale,
+  );
 }
 
 function getNodeRadius(node: EntityGraphNode): number {
@@ -237,11 +287,16 @@ function getNodeRadius(node: EntityGraphNode): number {
     return Math.min(20, Math.max(6, 6 + (riskScore / 100) * 14));
   }
 
-  return node.label === 'Transaction' ? 6 : 8;
+  return getPrimaryLabel(node) === 'Transaction' ? 6 : 8;
 }
 
 function getLinkColor(link: GraphLink): string {
   return edgeColors[link.type] ?? 'rgba(148, 163, 184, 0.35)';
+}
+
+function getNodeColor(node: EntityGraphNode): string {
+  const label = getPrimaryLabel(node);
+  return label ? nodeColors[label] : '#94a3b8';
 }
 
 function nodeMatchesKeys(node: GraphNode, keys: Set<string>): boolean {
@@ -260,39 +315,45 @@ function getNodeKeys(node: GraphNode): string[] {
   ].filter((value): value is string => Boolean(value));
 }
 
-function NodeTooltip({ node }: { node: GraphNode }) {
+function NodeTooltip({ node, graphLookup }: { node: GraphNode; graphLookup: GraphLookup }) {
   return (
     <aside className="node-tooltip">
-      <span>{node.label}</span>
+      <span>{getPrimaryLabel(node) ?? node.label ?? 'Entity'}</span>
       <strong>{node.name}</strong>
-      <p>{buildTooltip(node)}</p>
+      <p>{buildTooltip(node, graphLookup)}</p>
     </aside>
   );
 }
 
-function buildTooltip(node: GraphNode): string {
+function buildTooltip(node: GraphNode, graphLookup?: GraphLookup): string {
   const props = node.properties;
-  if (node.label === 'Client') {
-    return `${stringValue(props.Name) ?? node.name} | Risk ${numberValue(props.RiskScore).toFixed(0)}${props.IsPep === true ? ' | PEP' : ''}`;
+  const label = getPrimaryLabel(node);
+
+  if (label === 'Client') {
+    return `${node.name} | Risk ${numberValue(props.RiskScore).toFixed(0)}${props.IsPep === true ? ' | PEP' : ''}`;
   }
 
-  if (node.label === 'Account') {
-    return `${stringValue(props.IBAN) ?? node.name} | Balance ${formatNumber(props.Balance)} | ${stringValue(props.CountryCode) ?? 'N/A'}`;
+  if (label === 'Account') {
+    const ownerName = graphLookup ? getAccountOwnerName(node, graphLookup) : undefined;
+    return `${ownerName ? `Owner ${ownerName} | ` : ''}${stringValue(props.IBAN) ?? node.name} | Balance ${formatNumber(props.Balance)} | ${stringValue(props.CountryCode) ?? 'N/A'}`;
   }
 
-  if (node.label === 'Transaction') {
-    return `${formatNumber(props.Amount)} ${stringValue(props.Currency) ?? ''} | ${stringValue(props.Timestamp) ?? 'No timestamp'}`;
+  if (label === 'Transaction') {
+    const sourceAccount = graphLookup ? getRelatedAccountName(node, graphLookup.outboundAccountByTransactionKey) : undefined;
+    const destinationAccount = graphLookup ? getRelatedAccountName(node, graphLookup.inboundAccountByTransactionKey) : undefined;
+    const route = sourceAccount || destinationAccount ? ` | ${sourceAccount ?? 'Unknown source'} -> ${destinationAccount ?? 'Unknown destination'}` : '';
+    return `${node.name} | ${formatNumber(props.Amount)} ${stringValue(props.Currency) ?? ''} | ${stringValue(props.Timestamp) ?? 'No timestamp'}${route}`;
   }
 
-  if (node.label === 'IpAddress') {
-    return `${stringValue(props.Address) ?? node.name} | ${stringValue(props.CountryCode) ?? 'N/A'}`;
+  if (label === 'IpAddress') {
+    return `${node.name} | ${stringValue(props.Address) ?? node.name} | ${stringValue(props.CountryCode) ?? 'N/A'}`;
   }
 
-  if (node.label === 'Device') {
-    return `${stringValue(props.DeviceId) ?? node.name} | ${stringValue(props.BrowserFingerprint) ?? 'No fingerprint'}`;
+  if (label === 'Device') {
+    return `${node.name} | ${stringValue(props.DeviceId) ?? node.name} | ${stringValue(props.BrowserFingerprint) ?? 'No fingerprint'}`;
   }
 
-  return node.name;
+  return buildGenericTooltip(node);
 }
 
 function getNodeName(node: EntityGraphNode): string {
@@ -303,6 +364,156 @@ function getNodeName(node: EntityGraphNode): string {
     stringValue(props.Address) ??
     stringValue(props.DeviceId) ??
     node.id;
+}
+
+function buildAccountAlertFocus(
+  node: GraphNode,
+  graphNodes: GraphNode[],
+  graphLinks: EntityGraphEdge[],
+): AccountAlertFocus | null {
+  const label = getPrimaryLabel(node);
+  if (label === 'Account') {
+    const accountId = getBusinessNodeId(node);
+    const iban = stringValue(node.properties.IBAN);
+    if (!accountId || !iban) {
+      return null;
+    }
+
+    return {
+      ibanQuery: iban,
+      accountIds: [accountId],
+      sourceLabel: iban,
+    };
+  }
+
+  if (label !== 'Client') {
+    return null;
+  }
+
+  const clientKeys = getNodeKeys(node);
+  if (clientKeys.length === 0) {
+    return null;
+  }
+  const clientKeySet = new Set(clientKeys);
+
+  const accountsById = new Map<string, GraphNode>();
+  graphNodes
+    .filter((candidate) => getPrimaryLabel(candidate) === 'Account')
+    .forEach((account) => {
+      getNodeKeys(account).forEach((key) => accountsById.set(key, account));
+    });
+
+  const ownedAccounts = graphLinks
+    .filter((link) => link.type === 'OWNS' && clientKeySet.has(link.sourceId))
+    .map((link) => accountsById.get(link.targetId))
+    .filter((account): account is GraphNode => Boolean(account));
+
+  const accountIds = ownedAccounts
+    .map(getBusinessNodeId)
+    .filter((accountId): accountId is string => Boolean(accountId));
+
+  const ibans = ownedAccounts
+    .map((account) => stringValue(account.properties.IBAN))
+    .filter((iban): iban is string => Boolean(iban));
+
+  if (accountIds.length === 0 || ibans.length === 0) {
+    return null;
+  }
+
+  return {
+    ibanQuery: ibans.join(', '),
+    accountIds,
+    sourceLabel: stringValue(node.properties.Name) ?? node.name,
+  };
+}
+
+function getBusinessNodeId(node: EntityGraphNode): string | undefined {
+  return stringValue(node.properties.Id) ?? node.id;
+}
+
+function buildGraphLookup(graphNodes: GraphNode[], graphLinks: EntityGraphEdge[]): GraphLookup {
+  const nodesByKey = new Map<string, GraphNode>();
+  graphNodes.forEach((node) => {
+    getNodeKeys(node).forEach((key) => nodesByKey.set(key, node));
+  });
+
+  const ownerByAccountKey = new Map<string, GraphNode>();
+  const outboundAccountByTransactionKey = new Map<string, GraphNode>();
+  const inboundAccountByTransactionKey = new Map<string, GraphNode>();
+
+  graphLinks.forEach((link) => {
+    const sourceNode = nodesByKey.get(link.sourceId);
+    const targetNode = nodesByKey.get(link.targetId);
+
+    if (link.type === 'OWNS' && sourceNode && targetNode) {
+      getNodeKeys(targetNode).forEach((key) => ownerByAccountKey.set(key, sourceNode));
+    }
+
+    if (link.type === 'SENT' && sourceNode && targetNode) {
+      getNodeKeys(targetNode).forEach((key) => outboundAccountByTransactionKey.set(key, sourceNode));
+    }
+
+    if (link.type === 'RECEIVED_BY' && sourceNode && targetNode) {
+      getNodeKeys(sourceNode).forEach((key) => inboundAccountByTransactionKey.set(key, targetNode));
+    }
+  });
+
+  return {
+    nodesByKey,
+    ownerByAccountKey,
+    outboundAccountByTransactionKey,
+    inboundAccountByTransactionKey,
+  };
+}
+
+function getAccountOwnerName(accountNode: GraphNode, graphLookup: GraphLookup): string | undefined {
+  const owner = getNodeKeys(accountNode)
+    .map((key) => graphLookup.ownerByAccountKey.get(key))
+    .find((candidate): candidate is GraphNode => Boolean(candidate));
+
+  return owner ? stringValue(owner.properties.Name) ?? owner.name : undefined;
+}
+
+function getRelatedAccountName(transactionNode: GraphNode, accountByTransactionKey: Map<string, GraphNode>): string | undefined {
+  const account = getNodeKeys(transactionNode)
+    .map((key) => accountByTransactionKey.get(key))
+    .find((candidate): candidate is GraphNode => Boolean(candidate));
+
+  return account ? stringValue(account.properties.IBAN) ?? account.name : undefined;
+}
+
+function getPrimaryLabel(node: EntityGraphNode): KnownNodeLabel | undefined {
+  const candidates = [node.label, ...node.labels];
+  return candidates.find(isKnownNodeLabel);
+}
+
+function isKnownNodeLabel(value: string): value is KnownNodeLabel {
+  return value === 'Client' ||
+    value === 'Account' ||
+    value === 'Transaction' ||
+    value === 'IpAddress' ||
+    value === 'Device';
+}
+
+function buildGenericTooltip(node: GraphNode): string {
+  const entries = Object.entries(node.properties)
+    .filter(([, value]) => value !== null && value !== undefined && value !== '')
+    .slice(0, 4)
+    .map(([key, value]) => `${key}: ${formatPropertyValue(value)}`);
+
+  return entries.length > 0 ? entries.join(' | ') : `ID ${node.id}`;
+}
+
+function formatPropertyValue(value: unknown): string {
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+
+  return JSON.stringify(value);
 }
 
 function stringValue(value: unknown): string | undefined {

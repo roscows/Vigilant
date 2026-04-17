@@ -241,19 +241,17 @@ button {
 .graph-workspace {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
-  gap: 1rem;
+  gap: 0.7rem;
   min-width: 0;
   height: 100vh;
-  padding: 1rem;
+  padding: 0.6rem;
 }
 
 .graph-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
-  border-radius: 24px;
-  padding: 1rem 1.15rem;
+  display: grid;
+  gap: 0.7rem;
+  border-radius: 20px;
+  padding: 0.75rem;
 }
 
 .eyebrow {
@@ -276,14 +274,14 @@ button {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  justify-content: end;
-  gap: 0.7rem;
+  justify-content: space-between;
+  gap: 0.75rem;
 }
 
 .iban-search {
   display: grid;
   gap: 0.35rem;
-  min-width: min(26rem, 100%);
+  min-width: min(31rem, 100%);
 }
 
 .iban-search label {
@@ -300,10 +298,10 @@ button {
 }
 
 .iban-search input {
-  width: min(18rem, 44vw);
+  width: min(23rem, 46vw);
   border: 1px solid var(--border);
   border-radius: 999px;
-  padding: 0.82rem 1rem;
+  padding: 0.72rem 0.95rem;
   color: var(--text);
   outline: none;
   background: rgba(15, 17, 23, 0.72);
@@ -317,7 +315,7 @@ button {
 }
 
 .graph-toolbar button {
-  padding: 0.82rem 1rem;
+  padding: 0.72rem 1rem;
   color: #111827;
   font-weight: 850;
   background: var(--accent);
@@ -332,6 +330,42 @@ button {
   border: 1px solid var(--border) !important;
   color: var(--text) !important;
   background: rgba(255, 255, 255, 0.045) !important;
+}
+
+.graph-toolbar__buttons {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.node-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem 0.8rem;
+  margin: 0;
+  padding: 0;
+  color: var(--muted);
+  list-style: none;
+}
+
+.node-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.38rem;
+  font-size: 0.78rem;
+  line-height: 1.2;
+}
+
+.node-legend i {
+  width: 0.62rem;
+  height: 0.62rem;
+  border-radius: 999px;
+  box-shadow: 0 0 16px currentColor;
+}
+
+.node-legend strong {
+  color: var(--text);
+  font-weight: 850;
 }
 
 .connection-status {
@@ -410,6 +444,7 @@ button {
   right: 1rem;
   z-index: 5;
   width: min(360px, calc(100% - 2rem));
+  pointer-events: none;
   border: 1px solid rgba(248, 250, 252, 0.18);
   border-radius: 20px;
   padding: 1rem;
@@ -478,6 +513,14 @@ button {
     flex-direction: column;
   }
 
+  .graph-toolbar__buttons {
+    display: flex;
+  }
+
+  .graph-toolbar__buttons button {
+    flex: 1;
+  }
+
   .iban-search,
   .iban-search input {
     width: 100%;
@@ -490,6 +533,13 @@ button {
 
 .analyst-dashboard--table {
   grid-template-columns: minmax(420px, 0.42fr) minmax(0, 1fr);
+}
+
+.alerts-column {
+  position: relative;
+  min-width: 0;
+  height: 100vh;
+  overflow: hidden;
 }
 
 .alerts-table-panel {
@@ -550,9 +600,90 @@ button {
   resize: vertical;
 }
 
+.account-alert-focus {
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.85rem 1rem;
+  border-bottom: 1px solid var(--border);
+  background: rgba(245, 158, 11, 0.035);
+}
+
+.account-alert-focus label {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.account-alert-focus div {
+  display: flex;
+  gap: 0.55rem;
+}
+
+.account-alert-focus input {
+  min-width: 0;
+  flex: 1;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 0.72rem 0.8rem;
+  color: var(--text);
+  outline: none;
+  background: rgba(15, 17, 23, 0.72);
+}
+
+.account-alert-focus button {
+  border-radius: 14px;
+  padding: 0.72rem 0.8rem;
+  color: #111827;
+  cursor: pointer;
+  font-weight: 850;
+  background: var(--accent);
+}
+
+.account-alert-focus button:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+  background: rgba(148, 163, 184, 0.12);
+}
+
+.account-alert-focus span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.alerts-table-shell {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  padding: 0.75rem 0.45rem 0.75rem 0.2rem;
+}
+
+.alerts-table-header {
+  display: grid;
+  grid-template-columns: 0.9fr 0.85fr 0.9fr 1.2fr 1.55fr;
+  align-items: center;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+  padding-right: 0.7rem;
+  background: rgba(15, 17, 23, 0.98);
+}
+
+.alerts-table-header span {
+  padding: 0.78rem 0.55rem;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-align: left;
+  text-transform: uppercase;
+}
+
 .alerts-table-wrap {
+  flex: 1;
+  min-height: 0;
   overflow: auto;
-  padding: 0.75rem;
 }
 
 .alerts-table {
@@ -561,31 +692,33 @@ button {
   font-size: 0.86rem;
 }
 
-.alerts-table th,
-.alerts-table td {
+.alerts-table tbody {
+  display: block;
+}
+
+.alerts-table tr {
+  display: grid;
+  grid-template-columns: 0.9fr 0.85fr 0.9fr 1.2fr 1.55fr;
+  align-items: center;
   border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+}
+
+.alerts-table td {
   padding: 0.78rem 0.55rem;
   text-align: left;
   vertical-align: middle;
 }
 
-.alerts-table th {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  color: var(--muted);
-  font-size: 0.7rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  background: rgba(15, 17, 23, 0.96);
-}
-
 .alert-row {
+  cursor: pointer;
   transition: background 180ms ease, box-shadow 180ms ease;
 }
 
-.alert-row:hover {
+.alert-row:hover,
+.alert-row:focus-visible {
+  outline: none;
   background: rgba(255, 255, 255, 0.035);
+  box-shadow: inset 3px 0 0 var(--accent);
 }
 
 .alert-row--fresh {
@@ -601,7 +734,9 @@ button {
   animation: shimmer 1.3s ease infinite;
 }
 
+.alert-row--skeleton td,
 .alerts-table__empty {
+  grid-column: 1 / -1;
   color: var(--muted);
   text-align: center !important;
 }
@@ -630,7 +765,6 @@ button {
   background: rgba(245, 158, 11, 0.12);
 }
 
-.table-action-button,
 .panel-close-button,
 .status-update-form button {
   border-radius: 999px;
@@ -642,12 +776,12 @@ button {
 }
 
 .alert-detail-panel {
-  position: fixed;
-  inset: 0 0 0 auto;
+  position: absolute;
+  inset: 0;
   z-index: 20;
-  width: min(460px, 100vw);
+  width: 100%;
   pointer-events: none;
-  transform: translateX(105%);
+  transform: translateX(-105%);
   transition: transform 220ms ease;
 }
 
@@ -659,10 +793,10 @@ button {
 .alert-detail-panel__chrome {
   height: 100vh;
   overflow: auto;
-  border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
   padding: 1rem;
   background: rgba(15, 17, 23, 0.96);
-  box-shadow: -28px 0 80px rgba(0, 0, 0, 0.42);
+  box-shadow: 28px 0 80px rgba(0, 0, 0, 0.42);
   backdrop-filter: blur(18px);
 }
 
@@ -705,6 +839,10 @@ button {
   background: rgba(255, 255, 255, 0.035);
 }
 
+.alert-detail-grid__wide {
+  grid-column: 1 / -1;
+}
+
 .alert-detail-grid dt {
   color: var(--muted);
   font-size: 0.72rem;
@@ -716,6 +854,40 @@ button {
 .alert-detail-grid dd {
   margin: 0.35rem 0 0;
   overflow-wrap: anywhere;
+}
+
+.involved-customers-list {
+  display: grid;
+  gap: 0.6rem;
+  margin: 0.4rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.involved-customers-list li {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.2rem 0.65rem;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 14px;
+  padding: 0.65rem;
+  background: rgba(15, 17, 23, 0.48);
+}
+
+.involved-customers-list strong {
+  color: var(--text);
+}
+
+.involved-customers-list span {
+  grid-column: 1 / -1;
+  color: #cbd5e1;
+  font-size: 0.86rem;
+}
+
+.involved-customers-list small {
+  justify-self: end;
+  color: var(--accent);
+  font-weight: 850;
 }
 
 .audit-timeline h3 {
@@ -771,5 +943,9 @@ button {
     height: 560px;
     border-right: 0;
     border-bottom: 1px solid var(--border);
+  }
+
+  .alerts-column {
+    height: 560px;
   }
 }

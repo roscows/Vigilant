@@ -14,9 +14,11 @@ export function AlertsTable({ onOpenAlert }: AlertsTableProps) {
   const alerts = useAlertsStore((state) => state.alerts);
   const isLoading = useAlertsStore((state) => state.isLoading);
   const statusFilter = useAlertsStore((state) => state.statusFilter);
+  const accountFocus = useAlertsStore((state) => state.accountFocus);
   const recentAlertIds = useAlertsStore((state) => state.recentAlertIds);
   const setAlerts = useAlertsStore((state) => state.setAlerts);
   const setStatusFilter = useAlertsStore((state) => state.setStatusFilter);
+  const setAccountFocus = useAlertsStore((state) => state.setAccountFocus);
   const setLoading = useAlertsStore((state) => state.setLoading);
   const selectAlert = useAlertsStore((state) => state.selectAlert);
   const highlightAlert = useGraphStore((state) => state.highlightAlert);
@@ -39,8 +41,15 @@ export function AlertsTable({ onOpenAlert }: AlertsTableProps) {
   }, [from, setAlerts, setLoading, statusFilter, to]);
 
   const sortedAlerts = useMemo(
-    () => [...alerts].sort((left, right) => new Date(right.detectedAt).getTime() - new Date(left.detectedAt).getTime()),
-    [alerts],
+    () => {
+      const focusedAccountIds = new Set(accountFocus?.accountIds.map((accountId) => accountId.toLowerCase()) ?? []);
+      const filteredAlerts = focusedAccountIds.size === 0
+        ? alerts
+        : alerts.filter((alert) => alert.involvedAccountIds.some((accountId) => focusedAccountIds.has(accountId.toLowerCase())));
+
+      return [...filteredAlerts].sort((left, right) => new Date(right.detectedAt).getTime() - new Date(left.detectedAt).getTime());
+    },
+    [accountFocus, alerts],
   );
 
   const openAlert = (alert: AlertRecord) => {
@@ -77,41 +86,69 @@ export function AlertsTable({ onOpenAlert }: AlertsTableProps) {
         </label>
       </div>
 
-      <div className="alerts-table-wrap">
-        <table className="alerts-table">
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>Rule Type</th>
-              <th>Severity</th>
-              <th>Status</th>
-              <th>Detected At</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
+      <div className="account-alert-focus">
+        <label htmlFor="account-alert-focus">Graph Focus</label>
+        <div>
+          <input
+            id="account-alert-focus"
+            readOnly
+            value={accountFocus?.ibanQuery ?? ''}
+            placeholder="Click an account or client node"
+          />
+          <button type="button" onClick={() => setAccountFocus(null)} disabled={!accountFocus}>
+            Clear
+          </button>
+        </div>
+        {accountFocus ? (
+          <span>
+            Showing suspicious alerts for {accountFocus.sourceLabel} across {accountFocus.accountIds.length} account{accountFocus.accountIds.length === 1 ? '' : 's'}.
+          </span>
+        ) : null}
+      </div>
+
+      <div className="alerts-table-shell">
+        <div className="alerts-table-header" role="row">
+          <span role="columnheader">ID</span>
+          <span role="columnheader">Rule Type</span>
+          <span role="columnheader">Severity</span>
+          <span role="columnheader">Status</span>
+          <span role="columnheader">Detected At</span>
+        </div>
+
+        <div className="alerts-table-wrap">
+          <table className="alerts-table" aria-label="Persisted AML alerts">
           <tbody>
             {isLoading ? <SkeletonRows /> : null}
             {!isLoading && sortedAlerts.length === 0 ? (
               <tr>
-                <td colSpan={6} className="alerts-table__empty">No persisted alerts match the current filters.</td>
+                <td colSpan={5} className="alerts-table__empty">No persisted alerts match the current filters.</td>
               </tr>
             ) : null}
             {!isLoading && sortedAlerts.map((alert) => (
-              <tr className={recentAlertIds.includes(alert.id) ? 'alert-row alert-row--fresh' : 'alert-row'} key={alert.id}>
+              <tr
+                className={recentAlertIds.includes(alert.id) ? 'alert-row alert-row--fresh' : 'alert-row'}
+                key={alert.id}
+                onClick={() => openAlert(alert)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    openAlert(alert);
+                  }
+                }}
+                role="button"
+                tabIndex={0}
+                title="Open alert details"
+              >
                 <td>{truncate(alert.id, 8)}</td>
                 <td>{formatRuleType(alert.ruleType)}</td>
                 <td><SeverityBadge severity={alert.severity} /></td>
                 <td><StatusPill status={alert.status} /></td>
                 <td>{formatDateTime(alert.detectedAt)}</td>
-                <td>
-                  <button type="button" className="table-action-button" onClick={() => openAlert(alert)}>
-                    Open
-                  </button>
-                </td>
               </tr>
             ))}
           </tbody>
-        </table>
+          </table>
+        </div>
       </div>
     </aside>
   );
@@ -122,7 +159,7 @@ function SkeletonRows() {
     <>
       {Array.from({ length: 5 }, (_, index) => (
         <tr className="alert-row alert-row--skeleton" key={index}>
-          <td colSpan={6}><span /></td>
+          <td colSpan={5}><span /></td>
         </tr>
       ))}
     </>

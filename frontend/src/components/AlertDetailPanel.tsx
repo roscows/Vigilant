@@ -1,9 +1,17 @@
-import { FormEvent, useEffect, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { amlApi } from '../api/amlApi';
-import type { AlertRecord, AlertStatus } from '../api/types';
+import type { AlertRecord, AlertStatus, EntityGraph, EntityGraphEdge, EntityGraphNode } from '../api/types';
 import { useAlertsStore } from '../store/alertsStore';
+import { useGraphStore } from '../store/graphStore';
 
 const statusOptions: AlertStatus[] = ['New', 'UnderReview', 'Resolved', 'FalsePositive'];
+
+interface InvolvedCustomerAccount {
+  accountId: string;
+  iban: string;
+  clientName: string;
+  riskScore: number;
+}
 
 interface AlertDetailPanelProps {
   alertId: string | null;
@@ -12,28 +20,50 @@ interface AlertDetailPanelProps {
 
 export function AlertDetailPanel({ alertId, onClose }: AlertDetailPanelProps) {
   const upsertAlert = useAlertsStore((state) => state.upsertAlert);
+  const graphNodes = useGraphStore((state) => state.nodes);
+  const graphLinks = useGraphStore((state) => state.links);
   const [alert, setAlert] = useState<AlertRecord | null>(null);
   const [newStatus, setNewStatus] = useState<AlertStatus>('UnderReview');
   const [analystName, setAnalystName] = useState('');
   const [comment, setComment] = useState('');
   const [isSaving, setIsSaving] = useState(false);
+  const [investigationGraph, setInvestigationGraph] = useState<EntityGraph>({ nodes: [], edges: [] });
 
   useEffect(() => {
     if (!alertId) {
       setAlert(null);
+      setInvestigationGraph({ nodes: [], edges: [] });
       return;
     }
 
     const abortController = new AbortController();
-    amlApi.getAlertById(alertId, abortController.signal)
-      .then((data) => {
-        setAlert(data);
-        setNewStatus(data.status);
+    Promise.all([
+      amlApi.getAlertById(alertId, abortController.signal),
+      amlApi.getGraph({ limit: 5000 }, abortController.signal),
+    ])
+      .then(([alertData, graphData]) => {
+        setAlert(alertData);
+        setNewStatus(alertData.status);
+        setInvestigationGraph(graphData);
       })
-      .catch(() => setAlert(null));
+      .catch(() => {
+        setAlert(null);
+        setInvestigationGraph({ nodes: [], edges: [] });
+      });
 
     return () => abortController.abort();
   }, [alertId]);
+
+  const involvedCustomerAccounts = useMemo(
+    () => alert
+      ? mapInvolvedCustomerAccounts(
+        alert.involvedAccountIds,
+        mergeNodes(graphNodes, investigationGraph.nodes),
+        mergeLinks(graphLinks, investigationGraph.edges),
+      )
+      : [],
+    [alert, graphLinks, graphNodes, investigationGraph.edges, investigationGraph.nodes],
+  );
 
   const submitStatus = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -72,10 +102,6 @@ export function AlertDetailPanel({ alertId, onClose }: AlertDetailPanelProps) {
 
             <dl className="alert-detail-grid">
               <div>
-                <dt>Alert ID</dt>
-                <dd>{alert.id}</dd>
-              </div>
-              <div>
                 <dt>Status</dt>
                 <dd>{alert.status}</dd>
               </div>
@@ -83,9 +109,21 @@ export function AlertDetailPanel({ alertId, onClose }: AlertDetailPanelProps) {
                 <dt>Detected At</dt>
                 <dd>{formatDateTime(alert.detectedAt)}</dd>
               </div>
-              <div>
-                <dt>Involved Account IDs</dt>
-                <dd>{alert.involvedAccountIds.length > 0 ? alert.involvedAccountIds.join(', ') : 'No accounts captured'}</dd>
+              <div className="alert-detail-grid__wide">
+                <dt>Involved Customers</dt>
+                <dd>
+                  {involvedCustomerAccounts.length > 0 ? (
+                    <ul className="involved-customers-list">
+                      {involvedCustomerAccounts.map((item) => (
+                        <li key={item.accountId}>
+                          <strong>{item.clientName}</strong>
+                          <span>{item.iban}</span>
+                          <small>Risk {item.riskScore}</small>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : 'Customer context is loading from the graph.'}
+                </dd>
               </div>
             </dl>
 
@@ -133,4 +171,84 @@ function formatDateTime(value: string): string {
     dateStyle: 'medium',
     timeStyle: 'short',
   }).format(new Date(value));
+}
+
+function mapInvolvedCustomerAccounts(
+  involvedAccountIds: string[],
+  graphNodes: EntityGraphNode[],
+  graphLinks: EntityGraphEdge[],
+): InvolvedCustomerAccount[] {
+  const nodesByKey = new Map<string, EntityGraphNode>();
+  graphNodes.forEach((node) => {
+    getNodeKeys(node).forEach((key) => nodesByKey.set(key, node));
+  });
+
+  const ownerByAccountKey = new Map<string, EntityGraphNode>();
+  graphLinks
+    .filter((link) => link.type === 'OWNS')
+    .forEach((link) => {
+      const client = nodesByKey.get(link.sourceId);
+      const account = nodesByKey.get(link.targetId);
+      if (!client || !account) {
+        return;
+      }
+
+      getNodeKeys(account).forEach((key) => ownerByAccountKey.set(key, client));
+  });
+
+  return involvedAccountIds.map((accountKey) => {
+    const account = nodesByKey.get(accountKey);
+    const owner = account
+      ? getNodeKeys(account)
+        .map((key) => ownerByAccountKey.get(key))
+        .find((candidate): candidate is EntityGraphNode => Boolean(candidate))
+      : undefined;
+
+    const iban = account ? stringValue(account.properties.IBAN) ?? accountKey : accountKey;
+    const clientName = owner
+      ? stringValue(owner.properties.Name) ?? `Customer owning ${iban}`
+      : `Customer owning ${iban}`;
+
+    return {
+      accountId: stringValue(account?.properties.Id) ?? account?.id ?? accountKey,
+      iban,
+      clientName,
+      riskScore: owner ? numberValue(owner.properties.RiskScore) : 0,
+    };
+  });
+}
+
+function mergeNodes(primary: EntityGraphNode[], secondary: EntityGraphNode[]): EntityGraphNode[] {
+  const byKey = new Map<string, EntityGraphNode>();
+  [...secondary, ...primary].forEach((node) => {
+    const stableKey = stringValue(node.properties.Id) ?? node.id;
+    byKey.set(stableKey, node);
+  });
+
+  return [...byKey.values()];
+}
+
+function mergeLinks(primary: EntityGraphEdge[], secondary: EntityGraphEdge[]): EntityGraphEdge[] {
+  const byKey = new Map<string, EntityGraphEdge>();
+  [...secondary, ...primary].forEach((link) => {
+    byKey.set(link.id, link);
+  });
+
+  return [...byKey.values()];
+}
+
+function getNodeKeys(node: EntityGraphNode): string[] {
+  return [
+    node.id,
+    stringValue(node.properties.Id),
+    stringValue(node.properties.IBAN),
+  ].filter((value): value is string => Boolean(value));
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function numberValue(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
 }

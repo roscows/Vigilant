@@ -77,13 +77,15 @@ export default function App() {
 
   return (
     <main className="analyst-dashboard analyst-dashboard--table">
-      <AlertsTable onOpenAlert={openAlert} />
+      <section className="alerts-column">
+        <AlertsTable onOpenAlert={openAlert} />
+        <AlertDetailPanel alertId={openAlertId} onClose={closeAlert} />
+      </section>
       <AmlGraphViewer
         onLoadOverview={loadGraphOverview}
         onSearchIban={searchAccountIban}
         highlightedAccountIds={openAlertId && selectedAlert ? selectedAlert.involvedAccountIds : []}
       />
-      <AlertDetailPanel alertId={openAlertId} onClose={closeAlert} />
     </main>
   );
 }

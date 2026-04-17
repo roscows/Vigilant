@@ -1,12 +1,19 @@
 import { create } from 'zustand';
 import type { AlertRecord, AlertSeverityFilter, AlertStatusFilter, AmlAlert } from '../api/types';
 
+export interface AccountAlertFocus {
+  ibanQuery: string;
+  accountIds: string[];
+  sourceLabel: string;
+}
+
 interface AlertsState {
   alerts: AlertRecord[];
   unreadCount: number;
   selectedAlertId: string | null;
   severityFilter: AlertSeverityFilter;
   statusFilter: AlertStatusFilter;
+  accountFocus: AccountAlertFocus | null;
   isRealtimeConnected: boolean;
   isLoading: boolean;
   recentAlertIds: string[];
@@ -16,6 +23,7 @@ interface AlertsState {
   markRead: () => void;
   setFilter: (filter: AlertSeverityFilter) => void;
   setStatusFilter: (filter: AlertStatusFilter) => void;
+  setAccountFocus: (focus: AccountAlertFocus | null) => void;
   selectAlert: (alertId: string | null) => void;
   setRealtimeConnected: (isConnected: boolean) => void;
   setLoading: (isLoading: boolean) => void;
@@ -27,6 +35,7 @@ export const useAlertsStore = create<AlertsState>((set) => ({
   selectedAlertId: null,
   severityFilter: 'All',
   statusFilter: 'All',
+  accountFocus: null,
   isRealtimeConnected: false,
   isLoading: true,
   recentAlertIds: [],
@@ -38,6 +47,7 @@ export const useAlertsStore = create<AlertsState>((set) => ({
   markRead: () => set({ unreadCount: 0, recentAlertIds: [] }),
   setFilter: (severityFilter) => set({ severityFilter }),
   setStatusFilter: (statusFilter) => set({ statusFilter }),
+  setAccountFocus: (accountFocus) => set({ accountFocus }),
   selectAlert: (selectedAlertId) => set({ selectedAlertId, unreadCount: 0 }),
   setRealtimeConnected: (isRealtimeConnected) => set({ isRealtimeConnected }),
   setLoading: (isLoading) => set({ isLoading }),
