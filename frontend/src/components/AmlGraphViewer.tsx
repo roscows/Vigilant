@@ -7,6 +7,7 @@ import { useGraphStore } from '../store/graphStore';
 interface AmlGraphViewerProps {
   onLoadOverview: () => Promise<void>;
   onSearchIban: (iban: string) => Promise<void>;
+  highlightedAccountIds?: string[];
 }
 
 type GraphNode = EntityGraphNode & { name: string; val: number };
@@ -29,7 +30,7 @@ const edgeColors: Record<string, string> = {
   USES_DEVICE: 'rgba(236, 72, 153, 0.36)',
 };
 
-export function AmlGraphViewer({ onLoadOverview, onSearchIban }: AmlGraphViewerProps) {
+export function AmlGraphViewer({ onLoadOverview, onSearchIban, highlightedAccountIds = [] }: AmlGraphViewerProps) {
   const graphRef = useRef<ForceGraphMethods<GraphNode, GraphLink> | undefined>(undefined);
   const frameRef = useRef<HTMLDivElement | null>(null);
   const nodes = useGraphStore((state) => state.nodes);
@@ -68,7 +69,10 @@ export function AmlGraphViewer({ onLoadOverview, onSearchIban }: AmlGraphViewerP
     links: links.map((link) => ({ ...link, source: link.sourceId, target: link.targetId, label: link.type })),
   }), [links, nodes]);
 
-  const highlightedKeys = useMemo(() => new Set(highlightedNodeKeys.map((key) => key.toLowerCase())), [highlightedNodeKeys]);
+  const highlightedKeys = useMemo(
+    () => new Set([...highlightedNodeKeys, ...highlightedAccountIds].map((key) => key.toLowerCase())),
+    [highlightedAccountIds, highlightedNodeKeys],
+  );
   const hasHighlight = highlightedKeys.size > 0;
 
   const submitIbanSearch = (event: FormEvent<HTMLFormElement>) => {
@@ -91,7 +95,7 @@ export function AmlGraphViewer({ onLoadOverview, onSearchIban }: AmlGraphViewerP
         </div>
         <div className="graph-toolbar__actions">
           <form className="iban-search" onSubmit={submitIbanSearch}>
-            <label htmlFor="iban-search">IBAN Search</label>
+            <label htmlFor="iban-search">Focus on IBAN</label>
             <div>
               <input
                 id="iban-search"
@@ -112,7 +116,7 @@ export function AmlGraphViewer({ onLoadOverview, onSearchIban }: AmlGraphViewerP
             {isRealtimeConnected ? 'Live' : 'Disconnected'}
           </span>
           <button type="button" onClick={() => void onLoadOverview()} disabled={loading}>
-            Prikazi celu mrezu
+            Reset View
           </button>
           <button className="secondary-button" type="button" onClick={() => graphRef.current?.zoomToFit(500, 80)}>
             Fit View
@@ -125,7 +129,7 @@ export function AmlGraphViewer({ onLoadOverview, onSearchIban }: AmlGraphViewerP
         {graphData.nodes.length === 0 && !loading ? (
           <div className="graph-empty-state">
             <strong>No graph loaded</strong>
-            <span>Click Prikazi celu mrezu, investigate an alert, or search an account IBAN.</span>
+            <span>Click Reset View, open an alert, or focus on an account IBAN.</span>
           </div>
         ) : null}
         {graphData.nodes.length > 0 ? (

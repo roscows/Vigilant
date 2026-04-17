@@ -1,11 +1,12 @@
-﻿import { HubConnection, HubConnectionBuilder, HubConnectionState, LogLevel } from '@microsoft/signalr';
+import { HubConnection, HubConnectionBuilder, HubConnectionState, LogLevel } from '@microsoft/signalr';
 import { apiBaseUrl } from '../api/httpClient';
-import type { AmlAlert } from '../api/types';
+import type { AlertRecord, AmlAlert } from '../api/types';
 
 let connection: HubConnection | null = null;
 
 interface AlertsHubHandlers {
-  onAlert: (alert: AmlAlert) => void;
+  onDetectedAlert: (alert: AmlAlert) => void;
+  onUpdatedAlert: (alert: AlertRecord) => void;
   onConnectionChange: (isConnected: boolean) => void;
 }
 
@@ -23,8 +24,12 @@ export async function startAlertsHub(handlers: AlertsHubHandlers): Promise<HubCo
 
   connection.on('alerts.detected', (alerts: AmlAlert[]) => {
     for (const alert of alerts) {
-      handlers.onAlert(alert);
+      handlers.onDetectedAlert(alert);
     }
+  });
+
+  connection.on('alerts.updated', (alert: AlertRecord) => {
+    handlers.onUpdatedAlert(alert);
   });
 
   connection.onreconnecting(() => handlers.onConnectionChange(false));

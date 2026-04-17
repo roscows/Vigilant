@@ -1,23 +1,35 @@
-﻿import { httpClient } from './httpClient';
+import { httpClient } from './httpClient';
 import type {
-  AmlAlert,
+  AlertQuery,
+  AlertRecord,
   ClientRiskScore,
   EntityGraph,
+  GraphQuery,
   ProcessTransactionPayload,
   ProcessTransactionResult,
   SeedTransactionsPayload,
   SeedTransactionsResult,
+  UpdateAlertStatusPayload,
 } from './types';
 
-export interface AlertQuery {
-  maxTransfers?: number;
-  lookbackHours?: number;
-  limit?: number;
-}
-
 export const amlApi = {
-  async getAlerts(query: AlertQuery = {}, signal?: AbortSignal): Promise<AmlAlert[]> {
-    const { data } = await httpClient.get<AmlAlert[]>('/api/alerts', { params: query, signal });
+  async getAlerts(query: AlertQuery = {}, signal?: AbortSignal): Promise<AlertRecord[]> {
+    const { data } = await httpClient.get<AlertRecord[]>('/api/alerts', { params: query, signal });
+    return data;
+  },
+
+  async getAlertById(alertId: string, signal?: AbortSignal): Promise<AlertRecord> {
+    const { data } = await httpClient.get<AlertRecord>(`/api/alerts/${encodeURIComponent(alertId)}`, { signal });
+    return data;
+  },
+
+  async updateAlertStatus(alertId: string, payload: UpdateAlertStatusPayload): Promise<AlertRecord> {
+    const { data } = await httpClient.patch<AlertRecord>(`/api/alerts/${encodeURIComponent(alertId)}/status`, payload);
+    return data;
+  },
+
+  async getGraph(query: GraphQuery = {}, signal?: AbortSignal): Promise<EntityGraph> {
+    const { data } = await httpClient.get<EntityGraph>('/api/graph', { params: query, signal });
     return data;
   },
 

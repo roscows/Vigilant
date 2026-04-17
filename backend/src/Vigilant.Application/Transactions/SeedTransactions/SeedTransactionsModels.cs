@@ -12,6 +12,8 @@ public sealed record SeedTransactionsResult(
     int ClientsCreated,
     int AccountsCreated,
     int TransactionsCreated,
+    int AlertsDetected,
+    IReadOnlyDictionary<string, int> AlertsBySeverity,
     int CircularFlowsCreated,
     string FocusAccountIban,
     IReadOnlyCollection<string> CircularAccountIbans,

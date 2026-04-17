@@ -8,6 +8,7 @@ public sealed record AmlAlertDto(
     string AccountIban,
     decimal TotalAmount,
     IReadOnlyCollection<string> TransactionIds,
+    IReadOnlyCollection<string> AccountIds,
     IReadOnlyCollection<string> AccountIbans,
     IReadOnlyCollection<string> ClientIds,
     IReadOnlyCollection<string> DeviceIds,

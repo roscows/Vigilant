@@ -1,4 +1,4 @@
-﻿import { create } from 'zustand';
+import { create } from 'zustand';
 import type { EntityGraph, EntityGraphEdge, EntityGraphNode } from '../api/types';
 import { useAlertsStore } from './alertsStore';
 
@@ -28,7 +28,7 @@ export const useGraphStore = create<GraphState>((set) => ({
 
     set({
       highlightedAlertId: alertId,
-      highlightedNodeKeys: alert?.involvedNodeKeys ?? [],
+      highlightedNodeKeys: alert?.involvedAccountIds ?? [],
     });
   },
 }));

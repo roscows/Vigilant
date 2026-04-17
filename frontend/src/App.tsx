@@ -1,65 +1,62 @@
-import { useCallback, useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { amlApi } from './api/amlApi';
-import { AlertsPanel } from './components/AlertsPanel';
+import { AlertDetailPanel } from './components/AlertDetailPanel';
+import { AlertsTable } from './components/AlertsTable';
 import { AmlGraphViewer } from './components/AmlGraphViewer';
 import { startAlertsHub, stopAlertsHub } from './realtime/alertsHub';
 import { useAlertsStore } from './store/alertsStore';
 import { useGraphStore } from './store/graphStore';
 
 export default function App() {
+  const [openAlertId, setOpenAlertId] = useState<string | null>(null);
   const alerts = useAlertsStore((state) => state.alerts);
   const selectedAlertId = useAlertsStore((state) => state.selectedAlertId);
-  const setAlerts = useAlertsStore((state) => state.setAlerts);
-  const addAlert = useAlertsStore((state) => state.addAlert);
-  const setAlertsLoading = useAlertsStore((state) => state.setLoading);
+  const addDetectedAlert = useAlertsStore((state) => state.addDetectedAlert);
+  const upsertAlert = useAlertsStore((state) => state.upsertAlert);
   const setRealtimeConnected = useAlertsStore((state) => state.setRealtimeConnected);
+  const selectAlert = useAlertsStore((state) => state.selectAlert);
   const setGraph = useGraphStore((state) => state.setGraph);
   const setGraphLoading = useGraphStore((state) => state.setLoading);
   const highlightAlert = useGraphStore((state) => state.highlightAlert);
 
   const selectedAlert = useMemo(
-    () => alerts.find((alert) => alert.id === selectedAlertId),
+    () => alerts.find((alert) => alert.id === selectedAlertId) ?? null,
     [alerts, selectedAlertId],
   );
 
   const loadGraphOverview = useCallback(async (signal?: AbortSignal) => {
     setGraphLoading(true);
-    useAlertsStore.getState().selectAlert(null);
+    selectAlert(null);
     highlightAlert(null);
 
     try {
-      const graph = await amlApi.getGraphOverview(250, signal);
+      const graph = await amlApi.getGraph({ limit: 500 }, signal);
       setGraph(graph);
     } catch {
       setGraph({ nodes: [], edges: [] });
     }
-  }, [highlightAlert, setGraph, setGraphLoading]);
+  }, [highlightAlert, selectAlert, setGraph, setGraphLoading]);
 
   const searchAccountIban = useCallback(async (iban: string) => {
     setGraphLoading(true);
-    useAlertsStore.getState().selectAlert(null);
+    selectAlert(null);
     highlightAlert(null);
 
     try {
-      const graph = await amlApi.getEntityGraph(iban, 6);
+      const graph = await amlApi.getGraph({ ibanFocus: iban, depth: 2, limit: 500 });
       setGraph(graph);
     } catch {
       setGraph({ nodes: [], edges: [] });
     }
-  }, [highlightAlert, setGraph, setGraphLoading]);
+  }, [highlightAlert, selectAlert, setGraph, setGraphLoading]);
 
   useEffect(() => {
     const abortController = new AbortController();
-    setAlertsLoading(true);
-
-    amlApi.getAlerts({ maxTransfers: 8, lookbackHours: 24 * 7, limit: 250 }, abortController.signal)
-      .then((data) => setAlerts(data))
-      .catch(() => setAlerts([]));
-
     void loadGraphOverview(abortController.signal);
 
     startAlertsHub({
-      onAlert: addAlert,
+      onDetectedAlert: addDetectedAlert,
+      onUpdatedAlert: (alert) => upsertAlert(alert),
       onConnectionChange: setRealtimeConnected,
     }).catch(() => setRealtimeConnected(false));
 
@@ -68,30 +65,25 @@ export default function App() {
       setRealtimeConnected(false);
       void stopAlertsHub();
     };
-  }, [addAlert, loadGraphOverview, setAlerts, setAlertsLoading, setRealtimeConnected]);
+  }, [addDetectedAlert, loadGraphOverview, setRealtimeConnected, upsertAlert]);
 
-  useEffect(() => {
-    if (!selectedAlert?.accountIban) {
-      return;
-    }
+  const openAlert = (alertId: string) => {
+    setOpenAlertId(alertId);
+  };
 
-    const abortController = new AbortController();
-    setGraphLoading(true);
-
-    amlApi.getEntityGraph(selectedAlert.accountIban, 6, abortController.signal)
-      .then((graph) => {
-        setGraph(graph);
-        highlightAlert(selectedAlert.id);
-      })
-      .catch(() => setGraph({ nodes: [], edges: [] }));
-
-    return () => abortController.abort();
-  }, [highlightAlert, selectedAlert, setGraph, setGraphLoading]);
+  const closeAlert = () => {
+    setOpenAlertId(null);
+  };
 
   return (
-    <main className="analyst-dashboard">
-      <AlertsPanel />
-      <AmlGraphViewer onLoadOverview={loadGraphOverview} onSearchIban={searchAccountIban} />
+    <main className="analyst-dashboard analyst-dashboard--table">
+      <AlertsTable onOpenAlert={openAlert} />
+      <AmlGraphViewer
+        onLoadOverview={loadGraphOverview}
+        onSearchIban={searchAccountIban}
+        highlightedAccountIds={openAlertId && selectedAlert ? selectedAlert.involvedAccountIds : []}
+      />
+      <AlertDetailPanel alertId={openAlertId} onClose={closeAlert} />
     </main>
   );
 }

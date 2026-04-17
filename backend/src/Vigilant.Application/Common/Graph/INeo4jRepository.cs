@@ -1,4 +1,5 @@
-﻿using Vigilant.Application.Clients.Risk;
+using Vigilant.Application.Clients.Risk;
+using Vigilant.Domain.Alerts;
 
 namespace Vigilant.Application.Common.Graph;
 
@@ -24,6 +25,18 @@ public interface INeo4jRepository
         CancellationToken cancellationToken);
 
     Task<IReadOnlyCollection<AmlAlertDto>> FindRapidFanOutAsync(
+        TimeSpan lookbackWindow,
+        int minDistinctDestinations,
+        int limit,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyCollection<AmlAlertDto>> FindVelocityChainsAsync(
+        int minChainLength,
+        TimeSpan chainWindow,
+        int limit,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyCollection<AmlAlertDto>> FindFanOutAnomaliesAsync(
         TimeSpan lookbackWindow,
         int minDistinctDestinations,
         int limit,
@@ -59,6 +72,42 @@ public interface INeo4jRepository
         int nodeLimit,
         CancellationToken cancellationToken);
 
+    Task<EntityGraphDto> GetGraphAsync(
+        string? ibanFocus,
+        int depth,
+        DateTimeOffset? from,
+        DateTimeOffset? toDate,
+        int limit,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyCollection<AmlAlertDto>> RunAllRulesAsync(CancellationToken cancellationToken);
+
+    Task UpdateClientRiskScoreAsync(
+        string accountId,
+        int delta,
+        CancellationToken cancellationToken);
+
+    Task SaveAlertAsync(
+        AlertNode alert,
+        CancellationToken cancellationToken);
+
+    Task<List<AlertNode>> GetAlertsAsync(
+        AlertStatus? statusFilter,
+        DateTime? from,
+        DateTime? toDate,
+        CancellationToken cancellationToken);
+
+    Task<AlertNode?> GetAlertByIdAsync(
+        Guid id,
+        CancellationToken cancellationToken);
+
+    Task UpdateAlertStatusAsync(
+        Guid id,
+        AlertStatus newStatus,
+        string analystName,
+        string comment,
+        CancellationToken cancellationToken);
+
     Task<ClientRiskScoreDto> RecomputeClientRiskScoreAsync(
         string clientId,
         CancellationToken cancellationToken);
@@ -70,6 +119,8 @@ public interface INeo4jRepository
     string BuildCircularFlowDetectionQuery(int maxTransfers);
     string BuildSmurfingDetectionQuery();
     string BuildRapidFanOutDetectionQuery();
+    string BuildVelocityChainDetectionQuery(int minChainLength, int maxChainLength);
+    string BuildFanOutAnomalyDetectionQuery();
     string BuildSharedDeviceOrIpDetectionQuery();
     string BuildRoundTripDetectionQuery(int minTransfers, int maxTransfers);
     string BuildPepOffshoreDetectionQuery();

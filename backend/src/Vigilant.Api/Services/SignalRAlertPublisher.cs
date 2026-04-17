@@ -1,7 +1,8 @@
-﻿using Microsoft.AspNetCore.SignalR;
+using Microsoft.AspNetCore.SignalR;
 using Vigilant.Api.Hubs;
 using Vigilant.Application.Common.Alerts;
 using Vigilant.Application.Common.Graph;
+using Vigilant.Domain.Alerts;
 
 namespace Vigilant.Api.Services;
 
@@ -16,5 +17,11 @@ public sealed class SignalRAlertPublisher(IHubContext<AlertsHub> alertsHub) : IA
 
         return alertsHub.Clients.Group(AlertsHub.AllAlertsGroup)
             .SendAsync("alerts.detected", alerts, cancellationToken);
+    }
+
+    public Task PublishUpdatedAsync(AlertNode alert, CancellationToken cancellationToken)
+    {
+        return alertsHub.Clients.Group(AlertsHub.AllAlertsGroup)
+            .SendAsync("alerts.updated", alert, cancellationToken);
     }
 }

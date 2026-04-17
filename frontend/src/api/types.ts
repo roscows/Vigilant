@@ -1,5 +1,26 @@
-﻿export type AlertSeverity = 'Medium' | 'High' | 'Critical';
+export type AlertSeverity = 'Medium' | 'High' | 'Critical';
 export type AlertSeverityFilter = 'All' | AlertSeverity;
+export type AlertStatus = 'New' | 'UnderReview' | 'Resolved' | 'FalsePositive';
+export type AlertStatusFilter = 'All' | AlertStatus;
+
+export interface AlertAuditEntry {
+  analystName: string;
+  fromStatus: AlertStatus;
+  toStatus: AlertStatus;
+  comment: string;
+  changedAt: string;
+}
+
+export interface AlertRecord {
+  id: string;
+  ruleType: string;
+  severity: AlertSeverity;
+  status: AlertStatus;
+  involvedAccountIds: string[];
+  detectedAt: string;
+  auditLog: AlertAuditEntry[];
+  message: string;
+}
 
 export interface AmlAlert {
   id: string;
@@ -9,6 +30,7 @@ export interface AmlAlert {
   accountIban: string;
   totalAmount: number;
   transactionIds: string[];
+  accountIds: string[];
   accountIbans: string[];
   clientIds: string[];
   deviceIds: string[];
@@ -80,6 +102,8 @@ export interface SeedTransactionsResult {
   clientsCreated: number;
   accountsCreated: number;
   transactionsCreated: number;
+  alertsDetected: number;
+  alertsBySeverity: Partial<Record<AlertSeverity, number>>;
   circularFlowsCreated: number;
   focusAccountIban: string;
   circularAccountIbans: string[];
@@ -97,4 +121,24 @@ export interface ClientRiskScore {
   clientId: string;
   riskScore: number;
   contributingAlerts: RiskContribution[];
+}
+
+export interface AlertQuery {
+  status?: AlertStatus;
+  from?: string;
+  to?: string;
+}
+
+export interface UpdateAlertStatusPayload {
+  newStatus: AlertStatus;
+  analystName: string;
+  comment: string;
+}
+
+export interface GraphQuery {
+  ibanFocus?: string;
+  depth?: number;
+  from?: string;
+  to?: string;
+  limit?: number;
 }

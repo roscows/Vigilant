@@ -17,8 +17,8 @@ public sealed class DataSeederService(
         SeedTransactionsRequest request,
         CancellationToken cancellationToken)
     {
-        var clientCount = Math.Clamp(request.ClientCount, 6, 80);
-        var accountCount = Math.Clamp(request.AccountCount, 9, 160);
+        var clientCount = Math.Clamp(request.ClientCount, 12, 80);
+        var accountCount = Math.Clamp(request.AccountCount, 30, 160);
         var randomTransactionCount = Math.Clamp(request.RandomTransactionCount, 12, 600);
         var circularFlowCount = Math.Clamp(request.CircularFlowCount, 1, 12);
 
@@ -27,7 +27,7 @@ public sealed class DataSeederService(
             .Select(index => CreateAccount(index, clients[(index - 1) % clients.Length]))
             .ToArray();
 
-        var transactionIds = new List<string>(randomTransactionCount + circularFlowCount * 3 + 16);
+        var transactionIds = new List<string>(randomTransactionCount + circularFlowCount * 3 + 60);
         var circularAccountIbans = new List<string>(circularFlowCount * 3);
         var baseTimeUtc = DateTimeOffset.UtcNow.AddMinutes(-15);
 
@@ -71,12 +71,17 @@ public sealed class DataSeederService(
         }
 
         await AddSmurfingScenarioAsync(accounts, transactionIds, cancellationToken);
-        await AddRapidFanOutScenarioAsync(accounts, transactionIds, cancellationToken);
+        await AddVelocityChainScenariosAsync(accounts, transactionIds, cancellationToken);
+        await AddFanOutScenarioAsync(accounts, transactionIds, cancellationToken);
+        await AddFalsePositiveTransactionsAsync(accounts, transactionIds, cancellationToken);
         await AddPepOffshoreScenarioAsync(accounts, transactionIds, cancellationToken);
 
         var alerts = await amlDetectionService.EvaluateAndPublishAsync(
             CreateTransactionWriteModel(accounts[0], accounts[1], 1m, DateTimeOffset.UtcNow, "seed-evaluation", false),
             cancellationToken);
+        var alertsBySeverity = alerts
+            .GroupBy(alert => alert.Severity, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.Count(), StringComparer.OrdinalIgnoreCase);
 
         var distinctCircularIbans = circularAccountIbans.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
 
@@ -84,6 +89,8 @@ public sealed class DataSeederService(
             ClientsCreated: clients.Length,
             AccountsCreated: accounts.Length,
             TransactionsCreated: transactionIds.Count,
+            AlertsDetected: alerts.Count,
+            AlertsBySeverity: alertsBySeverity,
             CircularFlowsCreated: circularFlowCount,
             FocusAccountIban: distinctCircularIbans[0],
             CircularAccountIbans: distinctCircularIbans,
@@ -96,37 +103,94 @@ public sealed class DataSeederService(
         List<string> transactionIds,
         CancellationToken cancellationToken)
     {
-        var sender = accounts[2];
-        for (var index = 0; index < 6; index++)
+        for (var pairIndex = 0; pairIndex < 3; pairIndex++)
         {
-            var receiver = accounts[10 + index];
+            var sender = accounts[2 + pairIndex];
+            var receiver = accounts[12 + pairIndex];
+            var transactionCount = _faker.Random.Int(4, 6);
+
+            for (var index = 0; index < transactionCount; index++)
+            {
+                var result = await WriteSeedTransactionAsync(
+                    sender,
+                    receiver,
+                    _faker.Finance.Amount(3_100, 9_400, 2),
+                    DateTimeOffset.UtcNow.AddMinutes(-90 + pairIndex * 8 + index * 4),
+                    "seed-smurfing",
+                    false,
+                    cancellationToken);
+                transactionIds.Add(result.TransactionId);
+            }
+        }
+    }
+
+    private async Task AddVelocityChainScenariosAsync(
+        IReadOnlyList<SeedAccount> accounts,
+        List<string> transactionIds,
+        CancellationToken cancellationToken)
+    {
+        for (var chainIndex = 0; chainIndex < 2; chainIndex++)
+        {
+            var offset = 6 + chainIndex * 5;
+            var chainAccounts = accounts.Skip(offset).Take(5).ToArray();
+            var startTimeUtc = DateTimeOffset.UtcNow.AddMinutes(-25 + chainIndex * 3);
+
+            for (var hop = 0; hop < chainAccounts.Length - 1; hop++)
+            {
+                var result = await WriteSeedTransactionAsync(
+                    chainAccounts[hop],
+                    chainAccounts[hop + 1],
+                    _faker.Finance.Amount(8_000, 22_000, 2),
+                    startTimeUtc.AddMinutes(hop * 7),
+                    "seed-velocity",
+                    false,
+                    cancellationToken);
+                transactionIds.Add(result.TransactionId);
+            }
+        }
+    }
+
+    private async Task AddFanOutScenarioAsync(
+        IReadOnlyList<SeedAccount> accounts,
+        List<string> transactionIds,
+        CancellationToken cancellationToken)
+    {
+        var sender = accounts[4];
+        for (var index = 0; index < 12; index++)
+        {
+            var receiver = accounts[18 + index];
             var result = await WriteSeedTransactionAsync(
                 sender,
                 receiver,
-                8_250m,
-                DateTimeOffset.UtcNow.AddMinutes(-50 + index * 4),
-                "seed-smurfing",
+                _faker.Finance.Amount(1_200, 7_500, 2),
+                DateTimeOffset.UtcNow.AddMinutes(-55 + index * 3),
+                "seed-fanout",
                 false,
                 cancellationToken);
             transactionIds.Add(result.TransactionId);
         }
     }
 
-    private async Task AddRapidFanOutScenarioAsync(
+    private async Task AddFalsePositiveTransactionsAsync(
         IReadOnlyList<SeedAccount> accounts,
         List<string> transactionIds,
         CancellationToken cancellationToken)
     {
-        var sender = accounts[3];
-        for (var index = 0; index < 5; index++)
+        for (var index = 0; index < 10; index++)
         {
-            var receiver = accounts[20 + index];
+            var sender = accounts[(index + 8) % accounts.Count];
+            var receiver = accounts[(index + 19) % accounts.Count];
+            if (sender.Iban == receiver.Iban)
+            {
+                receiver = accounts[(index + 20) % accounts.Count];
+            }
+
             var result = await WriteSeedTransactionAsync(
                 sender,
                 receiver,
-                3_500m + index * 250m,
-                DateTimeOffset.UtcNow.AddMinutes(-35 + index * 3),
-                "seed-fanout",
+                _faker.Finance.Amount(9_050, 9_850, 2),
+                DateTimeOffset.UtcNow.AddHours(-2).AddMinutes(index * 11),
+                "seed-false-positive",
                 false,
                 cancellationToken);
             transactionIds.Add(result.TransactionId);

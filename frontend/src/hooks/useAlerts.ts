@@ -1,12 +1,12 @@
-﻿import { useCallback, useEffect, useMemo, useState } from 'react';
-import { amlApi, type AlertQuery } from '../api/amlApi';
-import type { AmlAlert } from '../api/types';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { amlApi } from '../api/amlApi';
+import type { AlertQuery, AlertRecord } from '../api/types';
 
-const defaultAlertQuery: AlertQuery = { maxTransfers: 4, lookbackHours: 24, limit: 25 };
+const defaultAlertQuery: AlertQuery = {};
 
 export function useAlerts(initialQuery: AlertQuery = defaultAlertQuery) {
   const query = useMemo(() => initialQuery, [initialQuery]);
-  const [alerts, setAlerts] = useState<AmlAlert[]>([]);
+  const [alerts, setAlerts] = useState<AlertRecord[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 

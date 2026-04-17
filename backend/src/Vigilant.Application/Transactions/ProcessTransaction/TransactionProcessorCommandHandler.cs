@@ -35,6 +35,7 @@ public sealed class TransactionProcessorCommandHandler(
 
         await neo4jRepository.WriteTransactionGraphAsync(graphWrite, cancellationToken);
         var triggeredAlerts = await amlDetectionService.EvaluateAndPublishAsync(graphWrite, cancellationToken);
+        await UpdateRiskScoresAsync(triggeredAlerts, cancellationToken);
 
         return new TransactionProcessorResult(
             transactionId,
@@ -49,6 +50,37 @@ public sealed class TransactionProcessorCommandHandler(
     private static string? NormalizeCountryCode(string? countryCode)
     {
         return string.IsNullOrWhiteSpace(countryCode) ? null : countryCode.Trim().ToUpperInvariant();
+    }
+
+    private async Task UpdateRiskScoresAsync(
+        IReadOnlyCollection<AmlAlertDto> alerts,
+        CancellationToken cancellationToken)
+    {
+        foreach (var alert in alerts)
+        {
+            var delta = GetRiskDelta(alert.Type);
+            if (delta == 0)
+            {
+                continue;
+            }
+
+            foreach (var accountId in alert.AccountIds.Where(value => !string.IsNullOrWhiteSpace(value)).Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                await neo4jRepository.UpdateClientRiskScoreAsync(accountId, delta, cancellationToken);
+            }
+        }
+    }
+
+    private static int GetRiskDelta(string ruleType)
+    {
+        return ruleType switch
+        {
+            "CircularFlow" => 30,
+            "Smurfing" => 20,
+            "VelocityChain" => 25,
+            "FanOut" => 15,
+            _ => 0
+        };
     }
 
     private static void Validate(TransactionProcessorCommand request)

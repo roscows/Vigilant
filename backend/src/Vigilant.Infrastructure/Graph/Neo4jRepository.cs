@@ -1,6 +1,8 @@
-﻿using System.Globalization;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.Extensions.Options;
 using Neo4j.Driver;
 using Vigilant.Application.Clients.Risk;
@@ -15,6 +17,7 @@ public sealed class Neo4jRepository(
     IOptions<Neo4jOptions> options) : INeo4jRepository
 {
     private static readonly string[] OffshoreCountryCodes = ["VG", "KY", "PA", "SC", "BZ", "VU"];
+    private static readonly JsonSerializerOptions AlertJsonOptions = CreateAlertJsonOptions();
     private readonly Neo4jOptions _options = options.Value;
 
     public async Task<TransactionGraphWriteResult> WriteTransactionGraphAsync(
@@ -174,6 +177,39 @@ public sealed class Neo4jRepository(
             });
     }
 
+    public Task<IReadOnlyCollection<AmlAlertDto>> FindVelocityChainsAsync(
+        int minChainLength,
+        TimeSpan chainWindow,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        return RunAlertQueryAsync(
+            AmlAlertTypes.VelocityChain,
+            BuildVelocityChainDetectionQuery(minChainLength, minChainLength + 2),
+            new Dictionary<string, object?>
+            {
+                ["windowMillis"] = (long)chainWindow.TotalMilliseconds,
+                ["limit"] = limit
+            });
+    }
+
+    public Task<IReadOnlyCollection<AmlAlertDto>> FindFanOutAnomaliesAsync(
+        TimeSpan lookbackWindow,
+        int minDistinctDestinations,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        return RunAlertQueryAsync(
+            AmlAlertTypes.FanOut,
+            BuildFanOutAnomalyDetectionQuery(),
+            new Dictionary<string, object?>
+            {
+                ["lookbackFromUtc"] = DateTimeOffset.UtcNow.Subtract(lookbackWindow).UtcDateTime.ToString("O", CultureInfo.InvariantCulture),
+                ["minDistinctDestinations"] = minDistinctDestinations,
+                ["limit"] = limit
+            });
+    }
+
     public Task<IReadOnlyCollection<AmlAlertDto>> FindSharedDeviceOrIpAsync(
         int minSharedClients,
         decimal highRiskClientScore,
@@ -319,6 +355,236 @@ public sealed class Neo4jRepository(
         }
     }
 
+    public async Task<EntityGraphDto> GetGraphAsync(
+        string? ibanFocus,
+        int depth,
+        DateTimeOffset? from,
+        DateTimeOffset? toDate,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        if (!string.IsNullOrWhiteSpace(ibanFocus))
+        {
+            return await GetEntityGraphAsync(ibanFocus.Trim(), depth, cancellationToken);
+        }
+
+        var safeLimit = Math.Clamp(limit, 25, 1_000);
+        const string cypher = """
+            MATCH (:Account)-[:SENT]->(tx:Transaction)-[:RECEIVED_BY]->(:Account)
+            WHERE ($fromUtc IS NULL OR tx.Timestamp >= datetime($fromUtc))
+              AND ($toUtc IS NULL OR tx.Timestamp <= datetime($toUtc))
+            WITH tx
+            ORDER BY tx.Timestamp DESC
+            LIMIT $limit
+            MATCH path = (tx)-[:RECEIVED_BY|EXECUTED_FROM_IP|EXECUTED_ON_DEVICE|SENT|OWNS*0..2]-()
+            WITH collect(path) AS paths
+            UNWIND paths AS path
+            UNWIND nodes(path) AS node
+            WITH paths, collect(DISTINCT node) AS graphNodes
+            UNWIND paths AS path
+            UNWIND relationships(path) AS relationship
+            RETURN graphNodes AS nodes, collect(DISTINCT relationship) AS relationships
+            """;
+
+        return await ReadGraphAsync(cypher, new
+        {
+            fromUtc = from?.UtcDateTime.ToString("O", CultureInfo.InvariantCulture),
+            toUtc = toDate?.UtcDateTime.ToString("O", CultureInfo.InvariantCulture),
+            limit = safeLimit
+        });
+    }
+
+    public async Task<IReadOnlyCollection<AmlAlertDto>> RunAllRulesAsync(CancellationToken cancellationToken)
+    {
+        var alertSets = await Task.WhenAll(
+            FindCircularFlowsAsync(4, TimeSpan.FromHours(24), 100, cancellationToken),
+            FindSmurfingAsync(TimeSpan.FromHours(24), 3, 10_000m, 10_000m, 50_000m, 100, cancellationToken),
+            FindVelocityChainsAsync(4, TimeSpan.FromMinutes(30), 100, cancellationToken),
+            FindFanOutAnomaliesAsync(TimeSpan.FromHours(1), 10, 100, cancellationToken));
+
+        var alerts = alertSets
+            .SelectMany(alert => alert)
+            .GroupBy(alert => alert.Id, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .OrderByDescending(alert => SeverityRank(alert.Severity))
+            .ThenByDescending(alert => alert.TotalAmount)
+            .ToArray();
+
+        foreach (var alert in alerts)
+        {
+            await SaveAlertAsync(ToAlertNode(alert), cancellationToken);
+        }
+
+        return alerts;
+    }
+
+    public async Task UpdateClientRiskScoreAsync(
+        string accountId,
+        int delta,
+        CancellationToken cancellationToken)
+    {
+        const string cypher = """
+            MATCH (client:Client)-[:OWNS]->(:Account { Id: $accountId })
+            WITH client, CASE
+                WHEN coalesce(client.RiskScore, 0.0) + $delta > 100.0 THEN 100.0
+                WHEN coalesce(client.RiskScore, 0.0) + $delta < 0.0 THEN 0.0
+                ELSE coalesce(client.RiskScore, 0.0) + $delta
+            END AS nextRiskScore
+            SET client.RiskScore = nextRiskScore
+            RETURN client.Id
+            """;
+
+        var session = driver.AsyncSession(config => config.WithDatabase(_options.Database));
+        try
+        {
+            await session.ExecuteWriteAsync(async tx =>
+                await tx.RunAsync(cypher, new { accountId, delta }));
+        }
+        finally
+        {
+            await session.CloseAsync();
+        }
+    }
+
+    public async Task SaveAlertAsync(AlertNode alert, CancellationToken cancellationToken)
+    {
+        const string cypher = """
+            MERGE (alert:Alert { Id: $id })
+              ON CREATE SET alert.RuleType = $ruleType,
+                            alert.Severity = $severity,
+                            alert.Status = $status,
+                            alert.InvolvedAccountIds = $involvedAccountIds,
+                            alert.DetectedAt = datetime($detectedAt),
+                            alert.AuditLog = $auditLog,
+                            alert.Message = $message
+              ON MATCH SET alert.RuleType = coalesce(alert.RuleType, $ruleType),
+                           alert.Severity = coalesce(alert.Severity, $severity),
+                           alert.InvolvedAccountIds = coalesce(alert.InvolvedAccountIds, $involvedAccountIds),
+                           alert.Message = coalesce(alert.Message, $message)
+            WITH alert
+            UNWIND $involvedAccountIds AS accountId
+            MATCH (account:Account { Id: accountId })
+            MERGE (alert)-[:INVOLVES]->(account)
+            RETURN alert.Id
+            """;
+
+        var session = driver.AsyncSession(config => config.WithDatabase(_options.Database));
+        try
+        {
+            await session.ExecuteWriteAsync(async tx =>
+                await tx.RunAsync(cypher, ToAlertParameters(alert)));
+        }
+        finally
+        {
+            await session.CloseAsync();
+        }
+    }
+
+    public async Task<List<AlertNode>> GetAlertsAsync(
+        AlertStatus? statusFilter,
+        DateTime? from,
+        DateTime? toDate,
+        CancellationToken cancellationToken)
+    {
+        const string cypher = """
+            MATCH (alert:Alert)
+            WHERE ($status IS NULL OR alert.Status = $status)
+              AND ($fromUtc IS NULL OR alert.DetectedAt >= datetime($fromUtc))
+              AND ($toUtc IS NULL OR alert.DetectedAt <= datetime($toUtc))
+            RETURN alert
+            ORDER BY alert.DetectedAt DESC
+            LIMIT 500
+            """;
+
+        var session = driver.AsyncSession(config => config.WithDatabase(_options.Database));
+        try
+        {
+            return await session.ExecuteReadAsync(async tx =>
+            {
+                var cursor = await tx.RunAsync(cypher, new
+                {
+                    status = statusFilter?.ToString(),
+                    fromUtc = from?.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture),
+                    toUtc = toDate?.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture)
+                });
+
+                var alerts = new List<AlertNode>();
+                while (await cursor.FetchAsync())
+                {
+                    alerts.Add(MapAlertNode(cursor.Current["alert"].As<INode>()));
+                }
+
+                return alerts;
+            });
+        }
+        finally
+        {
+            await session.CloseAsync();
+        }
+    }
+
+    public async Task<AlertNode?> GetAlertByIdAsync(Guid id, CancellationToken cancellationToken)
+    {
+        const string cypher = "MATCH (alert:Alert { Id: $id }) RETURN alert LIMIT 1";
+        var session = driver.AsyncSession(config => config.WithDatabase(_options.Database));
+        try
+        {
+            return await session.ExecuteReadAsync(async tx =>
+            {
+                var cursor = await tx.RunAsync(cypher, new { id = id.ToString() });
+                return await cursor.FetchAsync()
+                    ? MapAlertNode(cursor.Current["alert"].As<INode>())
+                    : null;
+            });
+        }
+        finally
+        {
+            await session.CloseAsync();
+        }
+    }
+
+    public async Task UpdateAlertStatusAsync(
+        Guid id,
+        AlertStatus newStatus,
+        string analystName,
+        string comment,
+        CancellationToken cancellationToken)
+    {
+        var existing = await GetAlertByIdAsync(id, cancellationToken)
+            ?? throw new KeyNotFoundException($"Alert '{id}' was not found.");
+
+        var auditLog = existing.AuditLog.ToList();
+        auditLog.Add(new AlertAuditEntry(
+            string.IsNullOrWhiteSpace(analystName) ? "Unknown analyst" : analystName.Trim(),
+            existing.Status,
+            newStatus,
+            comment?.Trim() ?? string.Empty,
+            DateTime.UtcNow));
+
+        const string cypher = """
+            MATCH (alert:Alert { Id: $id })
+            SET alert.Status = $status,
+                alert.AuditLog = $auditLog
+            RETURN alert.Id
+            """;
+
+        var session = driver.AsyncSession(config => config.WithDatabase(_options.Database));
+        try
+        {
+            await session.ExecuteWriteAsync(async tx =>
+                await tx.RunAsync(cypher, new
+                {
+                    id = id.ToString(),
+                    status = newStatus.ToString(),
+                    auditLog = JsonSerializer.Serialize(auditLog, AlertJsonOptions)
+                }));
+        }
+        finally
+        {
+            await session.CloseAsync();
+        }
+    }
+
     public async Task<ClientRiskScoreDto> RecomputeClientRiskScoreAsync(string clientId, CancellationToken cancellationToken)
     {
         var contributions = await GetRiskContributionsAsync(clientId);
@@ -396,6 +662,7 @@ public sealed class Neo4jRepository(
                    'Circular flow detected: ' + toString(size(transactions)) + ' transfers totalling ' + toString(round(totalAmount * 100) / 100) + ' from IBAN ' + origin.IBAN AS message,
                    origin.IBAN AS accountIban,
                    [tx IN transactions | tx.Id] AS transactionIds,
+                   [account IN accounts | account.Id] AS accountIds,
                    [account IN accounts | account.IBAN] AS accountIbans,
                    clientIds AS clientIds,
                    [] AS deviceIds,
@@ -409,19 +676,20 @@ public sealed class Neo4jRepository(
     public string BuildSmurfingDetectionQuery()
     {
         return """
-            MATCH (origin:Account)-[:SENT]->(tx:Transaction)
+            MATCH (origin:Account)-[:SENT]->(tx:Transaction)-[:RECEIVED_BY]->(destination:Account)
             WHERE tx.Timestamp >= datetime($lookbackFromUtc)
               AND coalesce(tx.Amount, 0.0) < $maxSingleTransactionAmount
-            WITH origin, collect(tx) AS transactions, count(tx) AS transactionCount, sum(coalesce(tx.Amount, 0.0)) AS totalAmount
-            WHERE transactionCount > $minTransactionCount AND totalAmount > $minTotalAmount
+            WITH origin, destination, collect(tx) AS transactions, count(tx) AS transactionCount, sum(coalesce(tx.Amount, 0.0)) AS totalAmount
+            WHERE transactionCount >= $minTransactionCount AND totalAmount > $minTotalAmount
             OPTIONAL MATCH (client:Client)-[:OWNS]->(origin)
-            WITH origin, transactions, transactionCount, totalAmount, collect(DISTINCT client.Id) AS clientIds
+            WITH origin, destination, transactions, transactionCount, totalAmount, collect(DISTINCT client.Id) AS clientIds
             RETURN 'Smurfing' AS type,
                    CASE WHEN totalAmount > $highSeverityAmount THEN 'High' ELSE 'Medium' END AS severity,
-                   'Smurfing detected: ' + toString(transactionCount) + ' transactions totalling ' + toString(round(totalAmount * 100) / 100) + ' in 24 h from IBAN ' + origin.IBAN AS message,
+                   'Smurfing detected: ' + toString(transactionCount) + ' transactions totalling ' + toString(round(totalAmount * 100) / 100) + ' in 24 h from IBAN ' + origin.IBAN + ' to IBAN ' + destination.IBAN AS message,
                    origin.IBAN AS accountIban,
                    [tx IN transactions | tx.Id] AS transactionIds,
-                   [origin.IBAN] AS accountIbans,
+                   [origin.Id, destination.Id] AS accountIds,
+                   [origin.IBAN, destination.IBAN] AS accountIbans,
                    clientIds AS clientIds,
                    [] AS deviceIds,
                    [] AS ipAddresses,
@@ -445,6 +713,7 @@ public sealed class Neo4jRepository(
                    'Rapid fan-out detected: IBAN ' + origin.IBAN + ' sent money to ' + toString(size(destinations)) + ' distinct accounts within 1 h.' AS message,
                    origin.IBAN AS accountIban,
                    [tx IN transactions | tx.Id] AS transactionIds,
+                   [account IN ([origin] + destinations) | account.Id] AS accountIds,
                    [account IN ([origin] + destinations) | account.IBAN] AS accountIbans,
                    clientIds AS clientIds,
                    [] AS deviceIds,
@@ -467,6 +736,7 @@ public sealed class Neo4jRepository(
                    'Shared device/IP detected: ' + toString(size(clients)) + ' clients share browser fingerprint ' + device.BrowserFingerprint AS message,
                    '' AS accountIban,
                    [] AS transactionIds,
+                   [] AS accountIds,
                    [] AS accountIbans,
                    [client IN clients | client.Id] AS clientIds,
                    [device.DeviceId, device.BrowserFingerprint] AS deviceIds,
@@ -481,11 +751,80 @@ public sealed class Neo4jRepository(
                    'Shared device/IP detected: ' + toString(size(clients)) + ' clients share IP address ' + ip.Address AS message,
                    '' AS accountIban,
                    [] AS transactionIds,
+                   [] AS accountIds,
                    [] AS accountIbans,
                    [client IN clients | client.Id] AS clientIds,
                    [] AS deviceIds,
                    [ip.Address] AS ipAddresses,
                    0.0 AS totalAmount
+            LIMIT $limit
+            """;
+    }
+
+    public string BuildVelocityChainDetectionQuery(int minChainLength, int maxChainLength)
+    {
+        var safeMin = Math.Clamp(minChainLength, 2, 8);
+        var safeMax = Math.Clamp(maxChainLength, safeMin, 8);
+        var minRelationshipJumps = safeMin * 2;
+        var maxRelationshipJumps = safeMax * 2;
+
+        return $"""
+            MATCH path = (origin:Account)-[:SENT|RECEIVED_BY*{minRelationshipJumps}..{maxRelationshipJumps}]->(terminal:Account)
+            WHERE origin <> terminal
+              AND all(index IN range(0, size(relationships(path)) - 1) WHERE
+                    (index % 2 = 0 AND type(relationships(path)[index]) = 'SENT') OR
+                    (index % 2 = 1 AND type(relationships(path)[index]) = 'RECEIVED_BY'))
+            WITH origin, terminal, path,
+                 [node IN nodes(path) WHERE node:Transaction] AS transactions,
+                 [node IN nodes(path) WHERE node:Account] AS accounts
+            WHERE size(transactions) >= {safeMin}
+              AND all(index IN range(0, size(transactions) - 2) WHERE transactions[index].Timestamp <= transactions[index + 1].Timestamp)
+            WITH origin, terminal, transactions, accounts,
+                 reduce(minTimestamp = transactions[0].Timestamp, tx IN transactions |
+                    CASE WHEN tx.Timestamp < minTimestamp THEN tx.Timestamp ELSE minTimestamp END) AS minTimestamp,
+                 reduce(maxTimestamp = transactions[0].Timestamp, tx IN transactions |
+                    CASE WHEN tx.Timestamp > maxTimestamp THEN tx.Timestamp ELSE maxTimestamp END) AS maxTimestamp,
+                 reduce(total = 0.0, tx IN transactions | total + coalesce(tx.Amount, 0.0)) AS totalAmount
+            WHERE maxTimestamp.epochMillis - minTimestamp.epochMillis <= $windowMillis
+            OPTIONAL MATCH (client:Client)-[:OWNS]->(origin)
+            WITH origin, transactions, accounts, totalAmount, collect(DISTINCT client.Id) AS clientIds
+            RETURN 'VelocityChain' AS type,
+                   CASE WHEN size(transactions) > {safeMin} THEN 'Critical' ELSE 'High' END AS severity,
+                   'Velocity chain detected: funds moved through ' + toString(size(transactions)) + ' rapid hops from IBAN ' + origin.IBAN + ' within 30 minutes.' AS message,
+                   origin.IBAN AS accountIban,
+                   [tx IN transactions | tx.Id] AS transactionIds,
+                   [account IN accounts | account.Id] AS accountIds,
+                   [account IN accounts | account.IBAN] AS accountIbans,
+                   clientIds AS clientIds,
+                   [] AS deviceIds,
+                   [] AS ipAddresses,
+                   totalAmount AS totalAmount
+            ORDER BY size(transactions) DESC, totalAmount DESC
+            LIMIT $limit
+            """;
+    }
+
+    public string BuildFanOutAnomalyDetectionQuery()
+    {
+        return """
+            MATCH (origin:Account)-[:SENT]->(tx:Transaction)-[:RECEIVED_BY]->(destination:Account)
+            WHERE tx.Timestamp >= datetime($lookbackFromUtc)
+            WITH origin, collect(tx) AS transactions, collect(DISTINCT destination) AS destinations, sum(coalesce(tx.Amount, 0.0)) AS totalAmount
+            WHERE size(destinations) > $minDistinctDestinations
+            OPTIONAL MATCH (client:Client)-[:OWNS]->(origin)
+            WITH origin, transactions, destinations, totalAmount, collect(DISTINCT client.Id) AS clientIds
+            RETURN 'FanOut' AS type,
+                   'Critical' AS severity,
+                   'Fan-out anomaly detected: IBAN ' + origin.IBAN + ' sent to ' + toString(size(destinations)) + ' distinct accounts within 1 h.' AS message,
+                   origin.IBAN AS accountIban,
+                   [tx IN transactions | tx.Id] AS transactionIds,
+                   [account IN ([origin] + destinations) | account.Id] AS accountIds,
+                   [account IN ([origin] + destinations) | account.IBAN] AS accountIbans,
+                   clientIds AS clientIds,
+                   [] AS deviceIds,
+                   [] AS ipAddresses,
+                   totalAmount AS totalAmount
+            ORDER BY size(destinations) DESC, totalAmount DESC
             LIMIT $limit
             """;
     }
@@ -513,6 +852,7 @@ public sealed class Neo4jRepository(
                    'Boomerang round-trip detected: funds from IBAN ' + origin.IBAN + ' returned within 7 days through ' + toString(size(transactions)) + ' transactions.' AS message,
                    origin.IBAN AS accountIban,
                    [tx IN transactions | tx.Id] AS transactionIds,
+                   [account IN accounts | account.Id] AS accountIds,
                    [account IN accounts | account.IBAN] AS accountIbans,
                    clientIds AS clientIds,
                    [] AS deviceIds,
@@ -535,6 +875,7 @@ public sealed class Neo4jRepository(
                    'PEP + offshore pattern detected: PEP client ' + client.Name + ' owns offshore account ' + account.IBAN + ' (' + account.CountryCode + ') and sent ' + toString(round(tx.Amount * 100) / 100) + ' ' + tx.Currency + '.' AS message,
                    account.IBAN AS accountIban,
                    [tx.Id] AS transactionIds,
+                   [account.Id] AS accountIds,
                    [account.IBAN] AS accountIbans,
                    [client.Id] AS clientIds,
                    [] AS deviceIds,
@@ -543,6 +884,170 @@ public sealed class Neo4jRepository(
             ORDER BY totalAmount DESC
             LIMIT $limit
             """;
+    }
+
+    private async Task<EntityGraphDto> ReadGraphAsync(string cypher, object parameters)
+    {
+        var session = driver.AsyncSession(config => config.WithDatabase(_options.Database));
+        try
+        {
+            return await session.ExecuteReadAsync(async tx =>
+            {
+                var cursor = await tx.RunAsync(cypher, parameters);
+                if (!await cursor.FetchAsync())
+                {
+                    return new EntityGraphDto(Array.Empty<GraphNodeDto>(), Array.Empty<GraphEdgeDto>());
+                }
+
+                var record = cursor.Current;
+                return new EntityGraphDto(
+                    record["nodes"].As<List<INode>>().Select(MapNode).ToArray(),
+                    record["relationships"].As<List<IRelationship>>().Select(MapRelationship).ToArray());
+            });
+        }
+        finally
+        {
+            await session.CloseAsync();
+        }
+    }
+
+    private static AlertNode ToAlertNode(AmlAlertDto alert)
+    {
+        return new AlertNode(
+            Guid.Parse(alert.Id),
+            alert.Type,
+            alert.Severity,
+            AlertStatus.New,
+            alert.AccountIds.Where(value => !string.IsNullOrWhiteSpace(value)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
+            alert.DetectedAtUtc.UtcDateTime,
+            Array.Empty<AlertAuditEntry>(),
+            alert.Message);
+    }
+
+    private static Dictionary<string, object?> ToAlertParameters(AlertNode alert)
+    {
+        return new Dictionary<string, object?>
+        {
+            ["id"] = alert.Id.ToString(),
+            ["ruleType"] = alert.RuleType,
+            ["severity"] = alert.Severity,
+            ["status"] = alert.Status.ToString(),
+            ["involvedAccountIds"] = alert.InvolvedAccountIds.ToArray(),
+            ["detectedAt"] = DateTime.SpecifyKind(alert.DetectedAt, DateTimeKind.Utc).ToString("O", CultureInfo.InvariantCulture),
+            ["auditLog"] = JsonSerializer.Serialize(alert.AuditLog, AlertJsonOptions),
+            ["message"] = alert.Message
+        };
+    }
+
+    private static AlertNode MapAlertNode(INode node)
+    {
+        var properties = node.Properties;
+        var status = Enum.TryParse<AlertStatus>(GetNodeString(properties, "Status"), out var parsedStatus)
+            ? parsedStatus
+            : AlertStatus.New;
+
+        return new AlertNode(
+            Guid.TryParse(GetNodeString(properties, "Id"), out var id) ? id : Guid.Empty,
+            GetNodeString(properties, "RuleType") ?? string.Empty,
+            GetNodeString(properties, "Severity") ?? "Medium",
+            status,
+            GetNodeStringList(properties, "InvolvedAccountIds"),
+            ReadDateTimeUtc(properties.TryGetValue("DetectedAt", out var detectedAt) ? detectedAt : null),
+            ReadAuditLog(GetNodeString(properties, "AuditLog")),
+            GetNodeString(properties, "Message") ?? string.Empty);
+    }
+
+    private static IReadOnlyCollection<AlertAuditEntry> ReadAuditLog(string? auditLogJson)
+    {
+        if (string.IsNullOrWhiteSpace(auditLogJson))
+        {
+            return Array.Empty<AlertAuditEntry>();
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<List<AlertAuditEntry>>(auditLogJson, AlertJsonOptions) ?? [];
+        }
+        catch (JsonException)
+        {
+            return Array.Empty<AlertAuditEntry>();
+        }
+    }
+
+    private static DateTime ReadDateTimeUtc(object? value)
+    {
+        if (value is null)
+        {
+            return DateTime.UtcNow;
+        }
+
+        if (value is DateTime dateTime)
+        {
+            return DateTime.SpecifyKind(dateTime, DateTimeKind.Utc);
+        }
+
+        if (value is DateTimeOffset dateTimeOffset)
+        {
+            return dateTimeOffset.UtcDateTime;
+        }
+
+        var toDateTimeOffset = value.GetType().GetMethod("ToDateTimeOffset", Type.EmptyTypes);
+        if (toDateTimeOffset?.Invoke(value, null) is DateTimeOffset reflectedOffset)
+        {
+            return reflectedOffset.UtcDateTime;
+        }
+
+        return DateTime.TryParse(
+            value.ToString(),
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+            out var parsed)
+            ? parsed
+            : DateTime.UtcNow;
+    }
+
+    private static string? GetNodeString(IReadOnlyDictionary<string, object> properties, string key)
+    {
+        return properties.TryGetValue(key, out var value) && value is not null
+            ? Convert.ToString(value, CultureInfo.InvariantCulture)
+            : null;
+    }
+
+    private static string[] GetNodeStringList(IReadOnlyDictionary<string, object> properties, string key)
+    {
+        if (!properties.TryGetValue(key, out var value) || value is null)
+        {
+            return Array.Empty<string>();
+        }
+
+        if (value is IEnumerable<object> objects)
+        {
+            return objects
+                .Select(item => Convert.ToString(item, CultureInfo.InvariantCulture))
+                .Where(item => !string.IsNullOrWhiteSpace(item))
+                .Select(item => item!)
+                .ToArray();
+        }
+
+        return Array.Empty<string>();
+    }
+
+    private static JsonSerializerOptions CreateAlertJsonOptions()
+    {
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        options.Converters.Add(new JsonStringEnumConverter());
+        return options;
+    }
+
+    private static int SeverityRank(string severity)
+    {
+        return severity switch
+        {
+            "Critical" => 3,
+            "High" => 2,
+            "Medium" => 1,
+            _ => 0
+        };
     }
 
     private async Task<IReadOnlyCollection<AmlAlertDto>> RunAlertQueryAsync(
@@ -576,11 +1081,13 @@ public sealed class Neo4jRepository(
     {
         var type = GetString(record, "type", fallbackType);
         var transactionIds = GetStringList(record, "transactionIds");
+        var accountIds = GetStringList(record, "accountIds");
         var accountIbans = GetStringList(record, "accountIbans");
         var clientIds = GetStringList(record, "clientIds");
         var deviceIds = GetStringList(record, "deviceIds");
         var ipAddresses = GetStringList(record, "ipAddresses");
         var involvedNodeKeys = transactionIds
+            .Concat(accountIds)
             .Concat(accountIbans)
             .Concat(clientIds)
             .Concat(deviceIds)
@@ -597,6 +1104,7 @@ public sealed class Neo4jRepository(
             AccountIban: GetString(record, "accountIban", accountIbans.FirstOrDefault() ?? string.Empty),
             TotalAmount: GetDecimal(record, "totalAmount"),
             TransactionIds: transactionIds,
+            AccountIds: accountIds,
             AccountIbans: accountIbans,
             ClientIds: clientIds,
             DeviceIds: deviceIds,
@@ -814,7 +1322,7 @@ public sealed class Neo4jRepository(
     {
         var source = $"{type}:{string.Join('|', involvedNodeKeys.Order(StringComparer.OrdinalIgnoreCase))}";
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(source));
-        return $"alert-{Convert.ToHexString(hash)[..24].ToLowerInvariant()}";
+        return new Guid(hash[..16]).ToString();
     }
 }
 

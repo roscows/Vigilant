@@ -1,0 +1,6 @@
+<svg width="64" height="64" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Vigilant">
+  <rect width="64" height="64" rx="18" fill="#1a1d27"/>
+  <circle cx="32" cy="32" r="20" fill="#2f3545"/>
+  <path d="M21 22h7l4.2 17.1L36.4 22H43L35.7 44h-7.2L21 22z" fill="#f8fafc"/>
+  <path d="M18 32c0-7.7 6.3-14 14-14 4.3 0 8.2 2 10.7 5.1" fill="none" stroke="#8b95a7" stroke-width="3" stroke-linecap="round"/>
+</svg>

@@ -1,4 +1,4 @@
-﻿import type { AlertSeverity, AlertSeverityFilter, AmlAlert } from '../api/types';
+import type { AlertRecord, AlertSeverity, AlertSeverityFilter } from '../api/types';
 import { useAlertsStore } from '../store/alertsStore';
 import { useGraphStore } from '../store/graphStore';
 
@@ -26,7 +26,7 @@ export function AlertsPanel() {
 
   const filteredAlerts = alerts.filter((alert) => severityFilter === 'All' || alert.severity === severityFilter);
 
-  const investigate = (alert: AmlAlert) => {
+  const investigate = (alert: AlertRecord) => {
     selectAlert(alert.id);
     highlightAlert(alert.id);
     markRead();
@@ -36,10 +36,9 @@ export function AlertsPanel() {
     <aside className="alerts-rail">
       <header className="alerts-brand">
         <div className="brand-lockup">
-          <span className="brand-mark">V</span>
+          <img className="brand-icon" src="/vigilant-icon.svg" alt="" aria-hidden="true" />
           <div>
-            <strong>Vigilant AML</strong>
-            <small>Real-time monitoring</small>
+            <strong>Vigilant</strong>
           </div>
         </div>
       </header>
@@ -70,9 +69,9 @@ export function AlertsPanel() {
           >
             <div className="alert-card__topline">
               <SeverityBadge severity={alert.severity} />
-              <span>{formatRelativeTime(alert.detectedAtUtc)}</span>
+              <span>{formatRelativeTime(alert.detectedAt)}</span>
             </div>
-            <h3>{alertTypeLabels[alert.type] ?? alert.type}</h3>
+            <h3>{alertTypeLabels[alert.ruleType] ?? alert.ruleType}</h3>
             <p>{alert.message}</p>
             <button className="investigate-button" type="button" onClick={() => investigate(alert)}>
               Investigate
