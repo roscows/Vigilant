@@ -126,7 +126,3 @@ Frontend:
 cd .\frontend
 npm run build
 ```
-
-## Napomena
-
-Ne treba commitovati `.env`, `node_modules`, `dist`, `bin` ili `obj` foldere.
