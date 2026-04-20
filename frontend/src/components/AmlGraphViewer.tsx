@@ -257,37 +257,43 @@ function paintNode(
   ctx.restore();
 }
 
-function paintNodePointerArea(node: NodeObject<GraphNode>, color: string, ctx: CanvasRenderingContext2D, globalScale = 1) {
+function paintNodePointerArea(node: NodeObject<GraphNode>, color: string, ctx: CanvasRenderingContext2D) {
   const graphNode = node as GraphNode;
-  const x = node.x ?? 0;
-  const y = node.y ?? 0;
-  const radius = getNodeRadius(graphNode);
-  const label = truncate(graphNode.name, 22);
-  const fontSize = Math.max(4, 11 / globalScale);
-  const labelWidth = Math.max(radius * 2, label.length * fontSize * 0.62);
-  const labelHeight = Math.max(12, 16 / globalScale);
-  const labelTop = y + radius + 2 / globalScale;
-
   ctx.fillStyle = color;
   ctx.beginPath();
-  ctx.arc(x, y, radius + 18, 0, Math.PI * 2);
+  ctx.arc(node.x ?? 0, node.y ?? 0, getNodeRadius(graphNode) + 9, 0, Math.PI * 2);
   ctx.fill();
-
-  ctx.fillRect(
-    x - labelWidth / 2 - 6 / globalScale,
-    labelTop,
-    labelWidth + 12 / globalScale,
-    labelHeight + 6 / globalScale,
-  );
 }
 
 function getNodeRadius(node: EntityGraphNode): number {
+  const label = getPrimaryLabel(node);
+  const minimumRadius = getMinimumNodeRadius(label);
   const riskScore = Number(node.properties.RiskScore ?? 0);
   if (Number.isFinite(riskScore) && riskScore > 0) {
-    return Math.min(20, Math.max(6, 6 + (riskScore / 100) * 14));
+    return Math.min(22, Math.max(minimumRadius, minimumRadius + (riskScore / 100) * 8));
   }
 
-  return getPrimaryLabel(node) === 'Transaction' ? 6 : 8;
+  return minimumRadius;
+}
+
+function getMinimumNodeRadius(label: KnownNodeLabel | undefined): number {
+  if (label === 'Client') {
+    return 16;
+  }
+
+  if (label === 'Account') {
+    return 13;
+  }
+
+  if (label === 'Transaction') {
+    return 10;
+  }
+
+  if (label === 'IpAddress' || label === 'Device') {
+    return 11;
+  }
+
+  return 11;
 }
 
 function getLinkColor(link: GraphLink): string {
